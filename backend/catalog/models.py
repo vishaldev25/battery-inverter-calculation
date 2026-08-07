@@ -5,7 +5,7 @@ Collections: equipment_catalog, battery_catalog, inverter_catalog
 
 from datetime import datetime
 from typing import List, Optional
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 from backend.calculation.constants import LoadCategory, BatteryChemistry
 
@@ -22,6 +22,10 @@ class EquipmentCatalog(BaseModel):
     default_pf: float = Field(default=1.0, gt=0, le=1.0, description="Default power factor (0.0 to 1.0]")
     default_surge_multiplier: float = Field(
         default=1.0, ge=1.0, description="Standard starting/inrush current surge multiplier"
+    )
+    notes: Optional[str] = Field(
+        default=None,
+        description="Free-text notes, e.g. flagging placeholder/reference-only data per Invariant 6.",
     )
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -49,6 +53,10 @@ class BatteryCatalog(BaseModel):
     max_continuous_discharge_amps: Optional[float] = Field(
         default=None, gt=0, description="Maximum continuous current limit in Amps"
     )
+    notes: Optional[str] = Field(
+        default=None,
+        description="Free-text notes, e.g. flagging placeholder/reference-only data per Invariant 6.",
+    )
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -69,15 +77,6 @@ class InverterCatalog(BaseModel):
     )
     waveform: str = Field(default="Pure Sine Wave", description="Output waveform type")
 
-    # --- Added (Feature 11 follow-up): grid-tie / voltage-window support ---
-    # Per Battery_inverter_sizing_full_spec.md Part E2, full inverter selection
-    # gating requires a voltage *window* (not just a single nominal voltage),
-    # LVD coordination against the battery's end-of-discharge voltage, and
-    # certification checks for grid-tie/anti-islanding compliance (a legal
-    # safety requirement, not optional, per the spec). All fields below are
-    # optional/default-safe so existing documents and code continue to work
-    # unchanged; matcher.py falls back to exact nominal_dc_voltage matching
-    # when input_voltage_window is not set.
     input_voltage_window: Optional[List[float]] = Field(
         default=None,
         description=(
@@ -88,6 +87,7 @@ class InverterCatalog(BaseModel):
     )
     lvd_threshold_v: Optional[float] = Field(
         default=None,
+        gt=0,
         description=(
             "Low-voltage-disconnect threshold. Used for LVD coordination "
             "against the battery's end-of-discharge voltage."
@@ -101,5 +101,30 @@ class InverterCatalog(BaseModel):
         default=False,
         description="Whether this inverter is rated for grid-interactive/grid-tie operation.",
     )
+    notes: Optional[str] = Field(
+        default=None,
+        description="Free-text notes, e.g. flagging placeholder/reference-only data per Invariant 6.",
+    )
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    @field_validator("input_voltage_window")
+    @classmethod
+    def _validate_voltage_window(cls, value: Optional[List[float]]) -> Optional[List[float]]:
+        if value is None:
+            return value
+        if len(value) != 2:
+            raise ValueError(
+                "input_voltage_window must contain exactly two values: [min, max]."
+            )
+        v_min, v_max = value
+        for v in (v_min, v_max):
+            if not isinstance(v, (int, float)) or v != v or v in (float("inf"), float("-inf")):
+                raise ValueError("input_voltage_window values must be finite numbers.")
+            if v <= 0:
+                raise ValueError("input_voltage_window values must be positive.")
+        if not v_min < v_max:
+            raise ValueError(
+                "input_voltage_window must be strictly increasing: min must be less than max."
+            )
+        return value

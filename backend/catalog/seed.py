@@ -58,5 +58,8 @@ async def run_seed() -> None:
 
 
 if __name__ == "__main__":
-    load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
+    # backend/catalog/seed.py -> parents[0]=backend/catalog, [1]=backend, [2]=project root
+    # .env lives at the project root (alongside backend/), not inside backend/,
+    # per the "run manually from the project root" usage in the docstring above.
+    load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
     asyncio.run(run_seed())

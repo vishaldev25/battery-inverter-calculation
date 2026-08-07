@@ -13,7 +13,6 @@ from backend.catalog.models import BatteryCatalog, InverterCatalog
 
 logger = logging.getLogger("backend.catalog.matcher")
 
-# Load categories that require pure sine per sizing spec Part E2 waveform gate.
 _WAVEFORM_SENSITIVE_CATEGORIES = {
     "motor_pump",
     "motor_compressor",
@@ -21,8 +20,6 @@ _WAVEFORM_SENSITIVE_CATEGORIES = {
     "hvac",
 }
 
-# InverterCatalog.waveform is a free string (default "Pure Sine Wave"), not
-# an enum — normalize case/spacing so filtering isn't brittle.
 _PURE_SINE_MARKERS = {"pure sine wave", "pure_sine", "pure sine"}
 
 
@@ -42,10 +39,6 @@ async def find_battery_candidates(
     Recommend mode: returns battery catalog entries whose nominal_voltage
     evenly divides the target bank voltage (a valid series-string
     candidate), optionally filtered by chemistry.
-
-    NOTE: only pre-filters plausible candidates. Does NOT compute
-    N_series/N_parallel or run the string self-check — that stays in
-    backend/calculation/battery.py per Architecture Invariant 1.
     """
     from backend.db.client import get_battery_catalog_collection
 
@@ -57,8 +50,6 @@ async def find_battery_candidates(
         voltage = doc.get("nominal_voltage")
         if not voltage or voltage <= 0:
             continue
-        # Same hard rule as sizing spec Part D3 (N_series must be integer),
-        # applied here purely as a pre-filter.
         if bank_voltage_nominal % voltage == 0:
             candidates.append(BatteryCatalog(**doc))
 
@@ -94,22 +85,37 @@ async def find_inverter_candidates(
 ) -> List[InverterCatalog]:
     """
     Recommend mode: returns inverter catalog entries that pass the hard
-    gates defined in sizing spec Part E2:
-      - continuous_va >= required
-      - surge_va >= required
-      - v_bank_actual falls within input_voltage_window, if the candidate
-        declares one; falls back to an exact nominal_dc_voltage match for
-        older/simpler catalog entries that don't declare a window
-      - waveform is pure sine if any waveform-sensitive load is present
-      - if grid_tie_required: grid_tie_capable is True AND both UL1741 and
-        IEEE1547 are present in certifications
-      - if battery_end_of_discharge_voltage is provided and the candidate
-        declares lvd_threshold_v: lvd_threshold_v must be >= that voltage,
-        so the inverter won't over-discharge the battery before disconnect
+    gates defined in sizing spec Part E2.
 
-    This is a filter over existing catalog data, not a re-implementation
-    of the selection formulas — backend/calculation/inverter.py still
-    makes the authoritative pass/fail call per candidate.
+    NOTE on implementation shape: this performs a full collection scan
+    (`find({})`) and applies every gate — continuous/surge VA, voltage
+    window, waveform, grid-tie certification, and LVD coordination — as
+    Python-side filtering, not as MongoDB query predicates. This is a
+    deliberate/acceptable tradeoff for the current catalog size (small,
+    manually curated per architecture.md Invariant 6); if the catalog
+    grows large enough for this to matter, continuous_va/surge_va are the
+    first candidates to push into the query filter.
+
+    Voltage matching:
+      - If the candidate declares a well-formed input_voltage_window
+        ([min, max], min < max), v_bank_actual must fall within it.
+      - If input_voltage_window is declared but malformed (wrong length —
+        this should be rare now that models.py validates on write, but
+        may still occur for pre-existing/legacy documents), the candidate
+        is EXCLUDED rather than silently falling back to an exact
+        nominal_dc_voltage match — a malformed window is a data integrity
+        problem, not the same thing as "no window declared."
+      - If input_voltage_window is None (not declared at all), fall back
+        to an exact nominal_dc_voltage match.
+
+    LVD coordination (hard gate, fails closed):
+      - If battery_end_of_discharge_voltage is provided, a candidate is
+        REJECTED unless it declares an lvd_threshold_v AND that threshold
+        is >= the battery's end-of-discharge voltage. A missing/unknown
+        lvd_threshold_v is treated as a failed gate, not a pass — an
+        inverter with an undocumented LVD threshold cannot be verified
+        safe to pair with the battery, per spec Part E2's hard-gate rule
+        ("all must pass — hard gate, not scoring").
     """
     from backend.db.client import get_inverter_catalog_collection
 
@@ -123,14 +129,22 @@ async def find_inverter_candidates(
             continue
 
         voltage_window = doc.get("input_voltage_window")
-        if voltage_window and len(voltage_window) == 2:
+        if voltage_window is None:
+            # No window declared — fall back to exact nominal match.
+            if doc.get("nominal_dc_voltage") != v_bank_actual:
+                continue
+        elif len(voltage_window) == 2:
             v_min, v_max = voltage_window
             if not (v_min <= v_bank_actual <= v_max):
                 continue
         else:
-            # No window declared — fall back to exact nominal match.
-            if doc.get("nominal_dc_voltage") != v_bank_actual:
-                continue
+            # Window declared but malformed (not exactly 2 values) —
+            # exclude rather than fall back; do not guess intent.
+            logger.warning(
+                "Inverter '%s' has a malformed input_voltage_window (%r) — excluded from candidates.",
+                doc.get("_id"), voltage_window,
+            )
+            continue
 
         if requires_pure_sine and not _is_pure_sine(doc.get("waveform", "")):
             continue
@@ -144,7 +158,10 @@ async def find_inverter_candidates(
 
         if battery_end_of_discharge_voltage is not None:
             lvd = doc.get("lvd_threshold_v")
-            if lvd is not None and lvd < battery_end_of_discharge_voltage:
+            # Fail closed: a missing/unknown LVD threshold cannot be
+            # verified as coordinated with the battery, so it does not
+            # pass this hard gate — it is not treated the same as "ok".
+            if lvd is None or lvd < battery_end_of_discharge_voltage:
                 continue
 
         candidates.append(InverterCatalog(**doc))
