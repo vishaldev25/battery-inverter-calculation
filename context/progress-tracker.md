@@ -3,10 +3,10 @@
 Update this file after every meaningful implementation change.
 
 ## Current Phase
-- In progress: Phase 2 - Calculation Engine (Phase 1 Foundation complete)
+- In progress: Phase 3 - API & Routing (Phase 1 & 2 complete).
 
 ## Current Goal
-- Implement the pure mathematical functions of the calculation engine, moving to battery bank sizing constraints.
+- Expose the pure calculation engine via a FastAPI endpoint to allow frontend interaction.
 
 ## Completed
 - **Infrastructure:** Initialized frontend with React + Vite (Plain JavaScript, no TypeScript).
@@ -21,12 +21,16 @@ Update this file after every meaningful implementation change.
 - **Feature 01 (Backend Constants):** Created `backend/calculation/constants.py` with strict IEEE/NEC standard engineering defaults (Power Factors, Surge Multipliers, Battery Chemistry limits, Temp correction).
 - **Feature 02 (Backend Data Models):** Created Pydantic models in `backend/projects/models.py` and `backend/catalog/models.py` to define the exact shapes of MongoDB collections (`projects`, `equipment_catalog`, `battery_catalog`, `inverter_catalog`).
 - **Feature 03 (Backend Calculation):** Created `backend/calculation/load.py` to aggregate `LoadItem` data, apply constants, and calculate Peak VA, Surge VA, and Daily Energy.
+- **Feature 04 (Backend Calculation):** Created `backend/calculation/battery.py` to calculate Ah requirements, apply Peukert's law, temperature corrections (IEEE 485), and solve for series/parallel string configurations.
+- **Feature 05 (Backend Calculation):** Created `backend/calculation/inverter.py` to match continuous and surge apparent power requirements, apply future expansion factors, and validate waveform and input voltage windows.
+- **Feature 06 (Backend Calculation):** Created `backend/calculation/cabling.py` to calculate $I_{design}$, voltage drop, and overcurrent protection based on NEC 210.19/215.2 standard rules.
+- **Feature 07 (Backend Calculation):** Created `backend/calculation/validation.py` to perform system-level cross-checks (voltage consistency, surge current limits, recharge feasibility) and aggregate all module warnings and errors.
 
 ## In Progress
-- **Feature 04 (Backend Calculation):** Implementing battery bank sizing (`battery.py`).
+- **Feature 08 (Backend API):** Implementing the `/calculate` router endpoint (`router.py`).
 
 ## Next Up
-- **Feature 04 (Backend Calculation):** Create `backend/calculation/battery.py` to calculate Ah requirements, apply Peukert's law, temperature corrections (IEEE 485), and solve for series/parallel string configurations.
+- **Feature 08 (Backend API):** Create `backend/projects/router.py` to wire together Features 03-07 into a single, cohesive calculation pipeline endpoint.
 
 ## Open Questions
 - None at present.
@@ -39,10 +43,10 @@ Update this file after every meaningful implementation change.
 - **Backend Architecture:** Created strict folder separation (`calculation/`, `projects/`, etc.) per `code-standards.md` to ensure pure functions and API logic do not mix.
 - **Database Driver:** Using `pymongo` (`AsyncMongoClient`) for fully asynchronous non-blocking interactions with MongoDB, adapting to modern ecosystem standards.
 - **Data Layers (Feature 01 & 02):** Decided to keep generic, immutable IEEE/NEC engineering defaults hardcoded in `constants.py` as a fail-safe baseline, while dynamic manufacturer-specific equipment specs and user project configurations are strictly typed with Pydantic and stored in MongoDB.
-- **Calculation Engine (Feature 03):** Established the pure, deterministic response schema for calculation modules, strictly separating `warnings` from `hard_errors` to ensure invalid constraints block output rendering.
+- **Calculation Engine (Feature 03-07):** The pure mathematical pipeline is fully implemented and relies entirely on IEEE/NEC standard formulas. Hard errors act as deterministic blockers for invalid system designs.
 
 ## Session Notes
 - Both `/frontend` and `/backend` foundations are 100% complete and version-controlled.
 - Virtual environment `venv` created inside `/backend`. Must be activated before running backend servers or installing new pip packages.
-- Features 01, 02, and 03 are complete. Load characterization module is locked in.
-- Proceeding through Phase 2 (Calculation Engine) sequentially.
+- Features 01 through 07 are complete. The mathematical calculation engine is finished.
+- Transitioning to Phase 3: Feature 08 will create the API layer that the React frontend will eventually consume.
