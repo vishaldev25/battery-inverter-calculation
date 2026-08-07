@@ -1,40 +1,42 @@
 """
-Backend API Router - Calculation Engine Endpoint
-Wires Features 03-07 into a cohesive, stateless calculation pipeline.
+Backend API Router - Calculation Engine + Project CRUD Endpoints
+Feature 08's stateless /calculate pipeline extracted into _execute_pipeline()
+so Feature 12's stateful routes call the identical code path — zero
+formula/sequencing duplication, per Invariant 1.
 """
 
 from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
-# Import Pydantic models
-from backend.projects.models import LoadItem, ProjectParameters
+from backend.projects.models import LoadItem, ProjectParameters, Project
 from backend.catalog.models import BatteryCatalog, InverterCatalog
 
-# Import pure calculation engine modules
 from backend.calculation.load import calculate_load_profile
 from backend.calculation.battery import calculate_battery_bank
 from backend.calculation.inverter import calculate_inverter_sizing
 from backend.calculation.cabling import calculate_cabling_and_protection
 from backend.calculation.validation import validate_system_design
+from backend.calculation.constants import FUTURE_EXPANSION_FACTOR
+
+from backend.projects import repository
+from backend.catalog import matcher
 
 router = APIRouter(prefix="/api/projects", tags=["Calculation Engine"])
 
 
 class CalculationRequest(BaseModel):
-    """Payload schema for stateless calculation execution."""
-    loads: List[LoadItem] = Field(..., min_items=1, description="List of electrical loads")
-    parameters: ProjectParameters = Field(..., description="System parameters and environment settings")
-    selected_battery: BatteryCatalog = Field(..., description="Candidate or selected battery spec")
-    selected_inverter: InverterCatalog = Field(..., description="Candidate or selected inverter spec")
-    cable_length_m: float = Field(default=5.0, ge=0.1, description="One-way cable length between battery bank and inverter in meters")
-    charge_current_a: float = Field(default=0.0, ge=0.0, description="Available charging current in Amps")
-    charge_window_hours: float = Field(default=0.0, ge=0.0, description="Available charging duration per day in hours")
-    components_colocated: bool = Field(default=False, description="Whether battery and inverter share the same thermal enclosure")
+    loads: List[LoadItem] = Field(..., min_items=1)
+    parameters: ProjectParameters
+    selected_battery: BatteryCatalog
+    selected_inverter: InverterCatalog
+    cable_length_m: float = Field(default=5.0, ge=0.1)
+    charge_current_a: float = Field(default=0.0, ge=0.0)
+    charge_window_hours: float = Field(default=0.0, ge=0.0)
+    components_colocated: bool = Field(default=False)
 
 
 class MasterCalculationResponse(BaseModel):
-    """Master Output Schema returning calculated engineering results, warnings, and hard errors."""
     is_valid: bool
     load_summary: Dict[str, Any]
     battery_summary: Dict[str, Any]
@@ -47,128 +49,119 @@ class MasterCalculationResponse(BaseModel):
 
 @router.post("/calculate", response_model=MasterCalculationResponse, status_code=status.HTTP_200_OK)
 async def calculate_project_endpoint(payload: CalculationRequest) -> MasterCalculationResponse:
-    """
-    Executes the 5-stage engineering calculation pipeline sequentially.
-    Guarantees deterministic output and aggregates module-level warnings and hard errors.
-    """
+    """Stateless calculation entrypoint (Feature 08) — unchanged behavior."""
+    return _execute_pipeline(
+        loads=payload.loads,
+        parameters=payload.parameters,
+        selected_battery=payload.selected_battery,
+        selected_inverter=payload.selected_inverter,
+        cable_length_m=payload.cable_length_m,
+        charge_current_a=payload.charge_current_a,
+        charge_window_hours=payload.charge_window_hours,
+        components_colocated=payload.components_colocated,
+    )
+
+
+def _execute_pipeline(
+    loads: List[LoadItem],
+    parameters: ProjectParameters,
+    selected_battery: BatteryCatalog,
+    selected_inverter: InverterCatalog,
+    cable_length_m: float,
+    charge_current_a: float,
+    charge_window_hours: float,
+    components_colocated: bool,
+) -> MasterCalculationResponse:
     aggregated_warnings: List[str] = []
     aggregated_hard_errors: List[str] = []
 
-    # -------------------------------------------------------------------------
-    # STAGE 1: Load Characterization
-    # -------------------------------------------------------------------------
-    load_res = calculate_load_profile(loads=payload.loads)
+    # STAGE 1
+    load_res = calculate_load_profile(loads=loads)
     _aggregate_messages(load_res, aggregated_warnings, aggregated_hard_errors)
-
     if load_res.get("hard_errors"):
         return _build_error_response(load_res, {}, {}, {}, {}, aggregated_warnings, aggregated_hard_errors)
 
-    # -------------------------------------------------------------------------
-    # STAGE 2: Battery Bank Sizing (IEEE 485 / IEEE 1013)
-    # -------------------------------------------------------------------------
+    # STAGE 2
     battery_res = calculate_battery_bank(
         daily_energy_wh=load_res["daily_energy_wh"],
         peak_real_power_w=load_res["peak_real_power_w"],
         surge_apparent_power_va=load_res["surge_apparent_power_va"],
-        params=payload.parameters,
-        battery=payload.selected_battery
+        params=parameters,
+        battery=selected_battery,
     )
     _aggregate_messages(battery_res, aggregated_warnings, aggregated_hard_errors)
-
     if battery_res.get("hard_errors"):
         return _build_error_response(load_res, battery_res, {}, {}, {}, aggregated_warnings, aggregated_hard_errors)
 
-    # -------------------------------------------------------------------------
-    # STAGE 3: Inverter Sizing
-    # -------------------------------------------------------------------------
-    # Physical system DC voltage
-    v_bank_actual = battery_res.get("n_series", 1) * payload.selected_battery.nominal_voltage
+    # STAGE 3
+    v_bank_actual = battery_res.get("n_series", 1) * selected_battery.nominal_voltage
 
     inverter_res = calculate_inverter_sizing(
         peak_apparent_power_va=load_res["peak_apparent_power_va"],
         peak_real_power_w=load_res["peak_real_power_w"],
         surge_apparent_power_va=load_res["surge_apparent_power_va"],
         v_bank_actual=v_bank_actual,
-        loads=payload.loads,
-        inverter=payload.selected_inverter
+        loads=loads,
+        inverter=selected_inverter,
     )
     _aggregate_messages(inverter_res, aggregated_warnings, aggregated_hard_errors)
-
     if inverter_res.get("hard_errors"):
         return _build_error_response(load_res, battery_res, inverter_res, {}, {}, aggregated_warnings, aggregated_hard_errors)
 
-    # -------------------------------------------------------------------------
-    # STAGE 4: Cabling and Overcurrent Protection (NEC 210.19 / 215.2)
-    # -------------------------------------------------------------------------
+    # STAGE 4
     cabling_res = calculate_cabling_and_protection(
         i_dc_continuous=inverter_res.get("i_dc_continuous", 0.0),
         v_bank_actual=v_bank_actual,
-        cable_length_m=payload.cable_length_m,
-        n_parallel_strings=battery_res.get("n_parallel", 1)
+        cable_length_m=cable_length_m,
+        n_parallel_strings=battery_res.get("n_parallel", 1),
     )
     _aggregate_messages(cabling_res, aggregated_warnings, aggregated_hard_errors)
-
     if cabling_res.get("hard_errors"):
         return _build_error_response(load_res, battery_res, inverter_res, cabling_res, {}, aggregated_warnings, aggregated_hard_errors)
 
-    # -------------------------------------------------------------------------
-    # STAGE 5: Cross-Module System Validation
-    # -------------------------------------------------------------------------
+    # STAGE 5
     validation_res = validate_system_design(
         load_result=load_res,
         battery_result=battery_res,
         inverter_result=inverter_res,
         cabling_result=cabling_res,
-        system_design_voltage=payload.parameters.system_dc_voltage,
-        inverter_input_voltage=payload.selected_inverter.nominal_dc_voltage,
-        battery_module_voltage=payload.selected_battery.nominal_voltage,
-        charge_current_a=payload.charge_current_a,
-        charge_window_hours=payload.charge_window_hours,
-        components_colocated=payload.components_colocated,
-        battery_surge_limit_a=payload.selected_battery.max_continuous_discharge_amps * 2.0 if payload.selected_battery.max_continuous_discharge_amps else 0.0,
-        inverter_surge_limit_a=(payload.selected_inverter.surge_va / v_bank_actual) if v_bank_actual > 0 else 0.0,
+        system_design_voltage=parameters.system_dc_voltage,
+        inverter_input_voltage=selected_inverter.nominal_dc_voltage,
+        battery_module_voltage=selected_battery.nominal_voltage,
+        charge_current_a=charge_current_a,
+        charge_window_hours=charge_window_hours,
+        components_colocated=components_colocated,
+        battery_surge_limit_a=selected_battery.max_continuous_discharge_amps * 2.0 if selected_battery.max_continuous_discharge_amps else 0.0,
+        inverter_surge_limit_a=(selected_inverter.surge_va / v_bank_actual) if v_bank_actual > 0 else 0.0,
         cable_rating_a=cabling_res.get("i_design_a", 0.0),
         fuse_rating_a=cabling_res.get("i_fuse_a", 0.0),
-        autonomy_days=payload.parameters.days_of_autonomy,
-        inverter_efficiency=payload.parameters.target_inverter_efficiency
+        inverter_efficiency=parameters.target_inverter_efficiency,
     )
     _aggregate_messages(validation_res, aggregated_warnings, aggregated_hard_errors)
 
-    # Deduplicate final messages preserving order
     final_warnings = list(dict.fromkeys(aggregated_warnings))
     final_hard_errors = list(dict.fromkeys(aggregated_hard_errors))
-    is_valid = len(final_hard_errors) == 0
 
     return MasterCalculationResponse(
-        is_valid=is_valid,
+        is_valid=len(final_hard_errors) == 0,
         load_summary=load_res,
         battery_summary=battery_res,
         inverter_summary=inverter_res,
         cabling_summary=cabling_res,
         validation_summary=validation_res,
         warnings=final_warnings,
-        hard_errors=final_hard_errors
+        hard_errors=final_hard_errors,
     )
 
 
 def _aggregate_messages(module_result: Dict[str, Any], warnings_list: List[str], hard_errors_list: List[str]) -> None:
-    """Utility helper to pull warnings and hard_errors out of module responses."""
     if "warnings" in module_result:
         warnings_list.extend(module_result["warnings"])
     if "hard_errors" in module_result:
         hard_errors_list.extend(module_result["hard_errors"])
 
 
-def _build_error_response(
-    load_res: Dict[str, Any],
-    battery_res: Dict[str, Any],
-    inverter_res: Dict[str, Any],
-    cabling_res: Dict[str, Any],
-    validation_res: Dict[str, Any],
-    warnings: List[str],
-    hard_errors: List[str]
-) -> MasterCalculationResponse:
-    """Constructs a standard blocked response payload when hard validation errors occur."""
+def _build_error_response(load_res, battery_res, inverter_res, cabling_res, validation_res, warnings, hard_errors) -> MasterCalculationResponse:
     return MasterCalculationResponse(
         is_valid=False,
         load_summary=load_res,
@@ -177,5 +170,266 @@ def _build_error_response(
         cabling_summary=cabling_res,
         validation_summary=validation_res,
         warnings=list(dict.fromkeys(warnings)),
-        hard_errors=list(dict.fromkeys(hard_errors))
+        hard_errors=list(dict.fromkeys(hard_errors)),
     )
+
+
+# ===========================================================================
+# FEATURE 12 — Project CRUD
+# ===========================================================================
+
+class CreateProjectRequest(BaseModel):
+    name: str = Field(..., min_length=1)
+    description: Optional[str] = None
+    loads: List[LoadItem] = Field(default_factory=list)
+    parameters: ProjectParameters = Field(default_factory=ProjectParameters)
+
+
+class UpdateProjectRequest(BaseModel):
+    name: str = Field(..., min_length=1)
+    description: Optional[str] = None
+    loads: List[LoadItem] = Field(default_factory=list)
+    parameters: ProjectParameters = Field(default_factory=ProjectParameters)
+
+
+class SetFavoriteRequest(BaseModel):
+    is_favorite: bool
+
+
+class SetStatusRequest(BaseModel):
+    status: str = Field(..., pattern="^(draft|active|completed|archived)$")
+
+
+class DeleteProjectRequest(BaseModel):
+    confirm_name: str = Field(..., min_length=1)
+
+
+@router.post("", response_model=Project, status_code=status.HTTP_201_CREATED)
+async def create_project_endpoint(payload: CreateProjectRequest) -> Project:
+    project = Project(name=payload.name, description=payload.description, loads=payload.loads, parameters=payload.parameters)
+    return await repository.create_project(project)
+
+
+@router.get("/{project_id}", response_model=Project)
+async def get_project_endpoint(project_id: str) -> Project:
+    project = await repository.get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    return project
+
+
+@router.put("/{project_id}", response_model=Project)
+async def replace_project_endpoint(project_id: str, payload: UpdateProjectRequest) -> Project:
+    updated = Project(name=payload.name, description=payload.description, loads=payload.loads, parameters=payload.parameters)
+    result = await repository.replace_project(project_id, updated)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    return result
+
+
+@router.patch("/{project_id}/favorite", response_model=Project)
+async def set_favorite_endpoint(project_id: str, payload: SetFavoriteRequest) -> Project:
+    result = await repository.set_favorite(project_id, payload.is_favorite)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    return result
+
+
+@router.patch("/{project_id}/status", response_model=Project)
+async def set_status_endpoint(project_id: str, payload: SetStatusRequest) -> Project:
+    result = await repository.set_status(project_id, payload.status)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    return result
+
+
+@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_project_endpoint(project_id: str, payload: DeleteProjectRequest) -> None:
+    project = await repository.get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    success = await repository.delete_project(project_id, payload.confirm_name)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Delete rejected: confirm_name did not match the project's name.")
+
+
+# ===========================================================================
+# FEATURE 12 — Stateful Calculate (Validate / Recommend) + Commit
+# ===========================================================================
+
+class StatefulCalculateRequest(BaseModel):
+    mode: str = Field(..., pattern="^(recommend|validate)$")
+    chosen_battery_id: Optional[str] = None
+    chosen_inverter_id: Optional[str] = None
+    cable_length_m: float = Field(default=5.0, ge=0.1)
+    charge_current_a: float = Field(default=0.0, ge=0.0)
+    charge_window_hours: float = Field(default=0.0, ge=0.0)
+    components_colocated: bool = Field(default=False)
+
+
+class CandidatePairResult(BaseModel):
+    battery_id: str
+    inverter_id: str
+    result: MasterCalculationResponse
+
+
+class RecommendResponse(BaseModel):
+    mode: str = "recommend"
+    candidates: List[CandidatePairResult]
+
+
+class CommitRequest(BaseModel):
+    battery_id: str
+    inverter_id: str
+    cable_length_m: float = Field(..., ge=0.1)
+    charge_current_a: float = Field(..., ge=0.0)
+    charge_window_hours: float = Field(..., ge=0.0)
+    components_colocated: bool = Field(...)
+
+
+@router.post("/{project_id}/calculate")
+async def stateful_calculate_endpoint(project_id: str, payload: StatefulCalculateRequest):
+    """
+    Validate mode -> single MasterCalculationResponse.
+    Recommend mode -> RecommendResponse listing every (battery, inverter)
+    pair that clears the full pipeline with zero hard_errors, sorted
+    smallest-adequate-first (actual_ah_capacity, then inverter.continuous_va —
+    both confirmed against the real battery.py/inverter.py output shapes).
+
+    Neither mode writes to last_calculation_result — only /calculate/commit does.
+    """
+    project = await repository.get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    if not project.loads:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Project has no loads to calculate against.")
+
+    if payload.mode == "validate":
+        if not payload.chosen_battery_id or not payload.chosen_inverter_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="chosen_battery_id and chosen_inverter_id are required in validate mode.")
+        battery = await matcher.get_battery_by_id(payload.chosen_battery_id)
+        if battery is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Battery '{payload.chosen_battery_id}' not found in catalog.")
+        inverter = await matcher.get_inverter_by_id(payload.chosen_inverter_id)
+        if inverter is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Inverter '{payload.chosen_inverter_id}' not found in catalog.")
+
+        return _execute_pipeline(
+            loads=project.loads,
+            parameters=project.parameters,
+            selected_battery=battery,
+            selected_inverter=inverter,
+            cable_length_m=payload.cable_length_m,
+            charge_current_a=payload.charge_current_a,
+            charge_window_hours=payload.charge_window_hours,
+            components_colocated=payload.components_colocated,
+        )
+
+    # --- Recommend mode ---
+    load_res = calculate_load_profile(loads=project.loads)
+    if load_res.get("hard_errors"):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={
+            "message": "Load characterization failed before any candidate could be evaluated.",
+            "hard_errors": load_res["hard_errors"],
+        })
+
+    battery_candidates = await matcher.find_battery_candidates(
+        bank_voltage_nominal=project.parameters.system_dc_voltage,
+        chemistry=project.parameters.battery_chemistry.value,
+    )
+
+    s_continuous_required_va = load_res["peak_apparent_power_va"] * (1.0 + FUTURE_EXPANSION_FACTOR)
+    active_categories = [load.category.value for load in project.loads]
+
+    # KNOWN GAP (confirmed, not a guess — see cover note): validate_system_design
+    # (Stage 5) does not implement an LVD coordination check, so
+    # battery_end_of_discharge_voltage has nowhere to be enforced per-pair
+    # even if it were passed here. Omitted rather than plumbed through to a
+    # gate that doesn't exist. Flagged in progress-tracker.md as a
+    # backend/calculation/validation.py gap, outside this unit's boundary.
+    inverter_candidates = await matcher.find_inverter_candidates(
+        s_continuous_required_va=s_continuous_required_va,
+        s_surge_required_va=load_res["surge_apparent_power_va"],
+        v_bank_actual=project.parameters.system_dc_voltage,
+        active_load_categories=active_categories,
+        grid_tie_required=False,  # No grid-tie field exists on ProjectParameters yet.
+    )
+
+    if not battery_candidates or not inverter_candidates:
+        return RecommendResponse(candidates=[])
+
+    scored_candidates: List[tuple] = []
+
+    for battery in battery_candidates:
+        for inverter in inverter_candidates:
+            pair_result = _execute_pipeline(
+                loads=project.loads,
+                parameters=project.parameters,
+                selected_battery=battery,
+                selected_inverter=inverter,
+                cable_length_m=payload.cable_length_m,
+                charge_current_a=payload.charge_current_a,
+                charge_window_hours=payload.charge_window_hours,
+                components_colocated=payload.components_colocated,
+            )
+            if pair_result.hard_errors:
+                continue
+
+            # Sort key confirmed against real battery.py/inverter.py output:
+            # actual_ah_capacity is battery.py's final post-string-solver
+            # capacity; inverter.continuous_va is the InverterCatalog's own
+            # rated value (inverter_res has no rated-capacity field — its
+            # s_continuous_va is the *requirement*, identical across pairs).
+            sort_key = (
+                pair_result.battery_summary.get("actual_ah_capacity", float("inf")),
+                inverter.continuous_va,
+            )
+            scored_candidates.append((
+                sort_key,
+                CandidatePairResult(battery_id=battery.id, inverter_id=inverter.id, result=pair_result),
+            ))
+
+    scored_candidates.sort(key=lambda pair: pair[0])
+    return RecommendResponse(candidates=[item for _, item in scored_candidates])
+
+
+@router.post("/{project_id}/calculate/commit", response_model=Project)
+async def commit_calculation_endpoint(project_id: str, payload: CommitRequest) -> Project:
+    """
+    Commits a chosen (battery, inverter) pair — re-runs Stages 2-5 once and
+    saves via repository.save_calculation_result. Refuses to save if the
+    pair has any hard_errors.
+    """
+    project = await repository.get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    battery = await matcher.get_battery_by_id(payload.battery_id)
+    if battery is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Battery '{payload.battery_id}' not found in catalog.")
+    inverter = await matcher.get_inverter_by_id(payload.inverter_id)
+    if inverter is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Inverter '{payload.inverter_id}' not found in catalog.")
+
+    result = _execute_pipeline(
+        loads=project.loads,
+        parameters=project.parameters,
+        selected_battery=battery,
+        selected_inverter=inverter,
+        cable_length_m=payload.cable_length_m,
+        charge_current_a=payload.charge_current_a,
+        charge_window_hours=payload.charge_window_hours,
+        components_colocated=payload.components_colocated,
+    )
+
+    if result.hard_errors:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={
+            "message": "Cannot commit — the chosen pair produced hard_errors.",
+            "hard_errors": result.hard_errors,
+        })
+
+    updated_project = await repository.save_calculation_result(project_id, result.model_dump())
+    if updated_project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    return updated_project
