@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Dict, Tuple
 
 class LoadCategory(str, Enum):
-    RESISTIVE = "resistive"
+    RESISTIVE = "resistive" 
     LIGHTING_INCANDESCENT = "lighting_incandescent"
     LIGHTING_LED = "lighting_led"
     MOTOR_PUMP = "motor_pump"
