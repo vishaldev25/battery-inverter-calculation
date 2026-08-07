@@ -97,25 +97,42 @@ def calculate_battery_bank(
     i_avg = peak_real_power_w / (params.system_dc_voltage * params.target_inverter_efficiency)
     
     # 8. Peukert & String Solver
-    n_parallel_ah = math.ceil(ah_required / battery.capacity_ah)
     
-    # Apply Peukert's Law correction for actual discharge rate
-    i_string_avg = i_avg / n_parallel_ah
-    rated_hours = 20.0  # Standard C/20 rating period
-    rated_current = battery.capacity_ah / rated_hours
-    
-    effective_ah_per_battery = battery.capacity_ah
-    if i_string_avg > rated_current and peukert_k > 1.0:
-        effective_ah_per_battery = battery.capacity_ah * ((rated_current / i_string_avg) ** (peukert_k - 1))
-        # Recalculate parallel strings based on Peukert-reduced capacity
-        n_parallel_ah = math.ceil(ah_required / effective_ah_per_battery)
-
-    # Current constraint parallel solver
+    # Initialize baseline string count from continuous current minimum
     n_parallel_cont = 1
     if battery.max_continuous_discharge_amps:
         n_parallel_cont = math.ceil(i_avg / battery.max_continuous_discharge_amps)
 
-    n_parallel = max(n_parallel_ah, n_parallel_cont)
+    # Initialize combined minimum string count
+    n_parallel = max(math.ceil(ah_required / battery.capacity_ah), n_parallel_cont)
+    
+    rated_hours = 20.0  # Standard C/20 rating period
+    rated_current = battery.capacity_ah / rated_hours
+    effective_ah_per_battery = battery.capacity_ah
+    
+    # Iteratively stabilize parallel string count under Peukert's Law
+    if peukert_k > 1.0:
+        while True:
+            i_string_avg = i_avg / n_parallel
+            
+            if i_string_avg > rated_current:
+                effective_ah_per_battery = battery.capacity_ah * ((rated_current / i_string_avg) ** (peukert_k - 1))
+            else:
+                effective_ah_per_battery = battery.capacity_ah
+                
+            new_n_parallel_ah = math.ceil(ah_required / effective_ah_per_battery)
+            new_n_parallel = max(new_n_parallel_ah, n_parallel_cont)
+            
+            # Break if the string count has stabilized
+            if new_n_parallel == n_parallel:
+                break
+                
+            # Failsafe against theoretical runaway
+            if new_n_parallel > 50:
+                n_parallel = new_n_parallel
+                break
+                
+            n_parallel = new_n_parallel
 
     # Final string-level warning
     if n_parallel > 4:

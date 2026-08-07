@@ -15,12 +15,17 @@ def validate_system_design(
     battery_module_voltage: float,
     charge_current_a: float = 0.0,
     charge_window_hours: float = 0.0,
-    components_colocated: bool = False
+    components_colocated: bool = False,
+    battery_surge_limit_a: float = 0.0,
+    inverter_surge_limit_a: float = 0.0,
+    cable_rating_a: float = 0.0,
+    fuse_rating_a: float = 0.0,
+    autonomy_days: float = 1.0
 ) -> Dict[str, Any]:
     """
     Executes cross-module system validation.
     Aggregates warnings and hard errors from all previous modules and performs 
-    system-level consistency checks (voltage matching, recharge feasibility, thermal).
+    system-level consistency checks (voltage matching, surge limits, recharge feasibility, thermal).
     """
     aggregated_warnings: List[str] = []
     aggregated_hard_errors: List[str] = []
@@ -33,7 +38,6 @@ def validate_system_design(
             aggregated_hard_errors.extend(module_res["hard_errors"])
 
     # 2. Voltage Consistency Check
-    # Verify that the physical bank voltage matches the system design and inverter requirements
     n_series = battery_result.get("n_series", 0)
     v_bank_actual = n_series * battery_module_voltage
 
@@ -50,13 +54,40 @@ def validate_system_design(
                 f"does not match the required inverter input voltage ({inverter_input_voltage}V)."
             )
 
-    # 3. Recharge Feasibility Check
+    # 3. Surge Current Path Validation
+    surge_va = load_result.get("surge_apparent_power_va", 0.0)
+    if v_bank_actual > 0 and surge_va > 0:
+        i_surge_required = surge_va / v_bank_actual
+
+        if battery_surge_limit_a > 0 and i_surge_required > battery_surge_limit_a:
+            aggregated_hard_errors.append(
+                f"Surge Violation: Required surge current ({i_surge_required:.1f}A) exceeds battery bank limit ({battery_surge_limit_a}A)."
+            )
+        if inverter_surge_limit_a > 0 and i_surge_required > inverter_surge_limit_a:
+            aggregated_hard_errors.append(
+                f"Surge Violation: Required surge current ({i_surge_required:.1f}A) exceeds inverter limit ({inverter_surge_limit_a}A)."
+            )
+        if cable_rating_a > 0 and i_surge_required > cable_rating_a:
+            aggregated_hard_errors.append(
+                f"Surge Violation: Required surge current ({i_surge_required:.1f}A) exceeds cable ampacity ({cable_rating_a}A)."
+            )
+        if fuse_rating_a > 0 and i_surge_required > fuse_rating_a:
+            aggregated_hard_errors.append(
+                f"Surge Violation: Required surge current ({i_surge_required:.1f}A) exceeds fuse rating ({fuse_rating_a}A)."
+            )
+
+    # 4. Recharge Feasibility Check
     # T_recharge = (Ah_discharged * 1.1) / I_charge_available
-    ah_required = battery_result.get("ah_required", 0.0)
+    # Uses actual discharged Ah (not margin-inclusive ah_required). 
+    # Fallback calculation if battery_result doesn't explicitly expose ah_discharged.
+    ah_discharged = battery_result.get("ah_discharged")
+    if not ah_discharged:
+        daily_energy = load_result.get("daily_energy_wh", 0.0)
+        ah_discharged = (daily_energy / system_design_voltage) * autonomy_days if system_design_voltage > 0 else 0.0
     
-    if charge_current_a > 0 and charge_window_hours > 0 and ah_required > 0:
+    if charge_current_a > 0 and charge_window_hours > 0 and ah_discharged > 0:
         # 1.1 factor accounts for charge inefficiency (Coulombic efficiency)
-        t_recharge_required = (ah_required * 1.1) / charge_current_a
+        t_recharge_required = (ah_discharged * 1.1) / charge_current_a
         
         if t_recharge_required > charge_window_hours:
             aggregated_warnings.append(
@@ -65,7 +96,7 @@ def validate_system_design(
                 f"window (e.g., daylight or generator run time) are available."
             )
 
-    # 4. Thermal Co-location Check
+    # 5. Thermal Co-location Check
     if components_colocated:
         aggregated_warnings.append(
             "Thermal Co-location: Battery bank and inverter are marked as sharing an enclosure. "
@@ -73,8 +104,7 @@ def validate_system_design(
             "Arrhenius cycle-life degradation of the batteries."
         )
 
-    # 5. Standby Load Advisory
-    # While Module 1 handles total energy, this is a final system-level sanity check reminder.
+    # 6. Standby Load Advisory
     if load_result.get("daily_energy_wh", 0) > 0:
         aggregated_warnings.append(
             "Verify that the inverter's 24/7 parasitic/standby draw has been included in the daily load schedule."
@@ -94,8 +124,8 @@ def validate_system_design(
             "v_bank_actual": v_bank_actual,
             "system_design_voltage": system_design_voltage,
             "recharge_feasible": (
-                (ah_required * 1.1) / charge_current_a <= charge_window_hours
-                if charge_current_a > 0 else None
+                ((ah_discharged * 1.1) / charge_current_a <= charge_window_hours)
+                if (charge_current_a > 0 and charge_window_hours > 0) else None
             )
         }
     }

@@ -41,8 +41,13 @@ def calculate_cabling_and_protection(
     # I_fuse = I_continuous * 1.25
     i_fuse = i_dc_continuous * 1.25
 
+    # Hard Input Validation
     if i_dc_continuous <= 0 or v_bank_actual <= 0:
         hard_errors.append("Invalid input: Continuous current and bank voltage must be greater than zero.")
+    if cable_length_m < 0:
+        hard_errors.append("Invalid input: Cable length cannot be negative.")
+        
+    if hard_errors:
         return _build_response(0.0, 0.0, None, 0.0, 0.0, warnings, hard_errors)
 
     # 3. Cable Selection (Ampacity and Voltage Drop)

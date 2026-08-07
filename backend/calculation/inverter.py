@@ -59,7 +59,10 @@ def calculate_inverter_sizing(
         LoadCategory.ELECTRONICS_IT
     }
     has_sensitive_loads = any(load.category in sensitive_categories for load in loads)
-    is_pure_sine = "pure" in inverter.waveform.lower()
+    
+    # Exact waveform classification to prevent false positives
+    normalized_waveform = inverter.waveform.strip().lower()
+    is_pure_sine = normalized_waveform == "pure sine wave"
 
     if has_sensitive_loads and not is_pure_sine:
         hard_errors.append(
