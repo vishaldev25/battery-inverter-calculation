@@ -4,7 +4,7 @@ Collections: equipment_catalog, battery_catalog, inverter_catalog
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 from pydantic import BaseModel, Field, ConfigDict
 
 from backend.calculation.constants import LoadCategory, BatteryChemistry
@@ -68,4 +68,38 @@ class InverterCatalog(BaseModel):
         default=0.93, gt=0, le=1.0, description="Peak conversion efficiency (0.0 to 1.0]"
     )
     waveform: str = Field(default="Pure Sine Wave", description="Output waveform type")
+
+    # --- Added (Feature 11 follow-up): grid-tie / voltage-window support ---
+    # Per Battery_inverter_sizing_full_spec.md Part E2, full inverter selection
+    # gating requires a voltage *window* (not just a single nominal voltage),
+    # LVD coordination against the battery's end-of-discharge voltage, and
+    # certification checks for grid-tie/anti-islanding compliance (a legal
+    # safety requirement, not optional, per the spec). All fields below are
+    # optional/default-safe so existing documents and code continue to work
+    # unchanged; matcher.py falls back to exact nominal_dc_voltage matching
+    # when input_voltage_window is not set.
+    input_voltage_window: Optional[List[float]] = Field(
+        default=None,
+        description=(
+            "Optional [min, max] DC input voltage window across the full "
+            "charge/discharge swing. If unset, nominal_dc_voltage is treated "
+            "as an exact-match requirement instead."
+        ),
+    )
+    lvd_threshold_v: Optional[float] = Field(
+        default=None,
+        description=(
+            "Low-voltage-disconnect threshold. Used for LVD coordination "
+            "against the battery's end-of-discharge voltage."
+        ),
+    )
+    certifications: List[str] = Field(
+        default_factory=list,
+        description="Certifications held (e.g. 'IEC62109', 'UL1741', 'IEEE1547'). Empty if none/unknown.",
+    )
+    grid_tie_capable: bool = Field(
+        default=False,
+        description="Whether this inverter is rated for grid-interactive/grid-tie operation.",
+    )
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
