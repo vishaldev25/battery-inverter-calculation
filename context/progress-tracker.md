@@ -6,7 +6,7 @@ Update this file after every meaningful implementation change.
 - In progress: Phase 2 - Calculation Engine (Phase 1 Foundation complete)
 
 ## Current Goal
-- Implement the pure mathematical functions of the calculation engine, starting with load characterization and energy demand math.
+- Implement the pure mathematical functions of the calculation engine, moving to battery bank sizing constraints.
 
 ## Completed
 - **Infrastructure:** Initialized frontend with React + Vite (Plain JavaScript, no TypeScript).
@@ -20,12 +20,13 @@ Update this file after every meaningful implementation change.
 - **Infrastructure:** Scaffolded standard backend module folders (`calculation`, `catalog`, `csv`, `projects`, `report`) and `__init__.py` files via PowerShell.
 - **Feature 01 (Backend Constants):** Created `backend/calculation/constants.py` with strict IEEE/NEC standard engineering defaults (Power Factors, Surge Multipliers, Battery Chemistry limits, Temp correction).
 - **Feature 02 (Backend Data Models):** Created Pydantic models in `backend/projects/models.py` and `backend/catalog/models.py` to define the exact shapes of MongoDB collections (`projects`, `equipment_catalog`, `battery_catalog`, `inverter_catalog`).
+- **Feature 03 (Backend Calculation):** Created `backend/calculation/load.py` to aggregate `LoadItem` data, apply constants, and calculate Peak VA, Surge VA, and Daily Energy.
 
 ## In Progress
-- **Feature 03 (Backend Calculation):** Implementing load characterization (`load.py`).
+- **Feature 04 (Backend Calculation):** Implementing battery bank sizing (`battery.py`).
 
 ## Next Up
-- **Feature 03 (Backend Calculation):** Create `backend/calculation/load.py` to aggregate `LoadItem` data, apply constants, and calculate Peak VA, Surge VA, and Daily Energy.
+- **Feature 04 (Backend Calculation):** Create `backend/calculation/battery.py` to calculate Ah requirements, apply Peukert's law, temperature corrections (IEEE 485), and solve for series/parallel string configurations.
 
 ## Open Questions
 - None at present.
@@ -38,9 +39,10 @@ Update this file after every meaningful implementation change.
 - **Backend Architecture:** Created strict folder separation (`calculation/`, `projects/`, etc.) per `code-standards.md` to ensure pure functions and API logic do not mix.
 - **Database Driver:** Using `pymongo` (`AsyncMongoClient`) for fully asynchronous non-blocking interactions with MongoDB, adapting to modern ecosystem standards.
 - **Data Layers (Feature 01 & 02):** Decided to keep generic, immutable IEEE/NEC engineering defaults hardcoded in `constants.py` as a fail-safe baseline, while dynamic manufacturer-specific equipment specs and user project configurations are strictly typed with Pydantic and stored in MongoDB.
+- **Calculation Engine (Feature 03):** Established the pure, deterministic response schema for calculation modules, strictly separating `warnings` from `hard_errors` to ensure invalid constraints block output rendering.
 
 ## Session Notes
 - Both `/frontend` and `/backend` foundations are 100% complete and version-controlled.
 - Virtual environment `venv` created inside `/backend`. Must be activated before running backend servers or installing new pip packages.
-- Feature 01 and Feature 02 are complete. Foundational math constants and data schemas are locked in.
-- Transitioning from Phase 1 (Foundation) to Phase 2 (Calculation Engine).
+- Features 01, 02, and 03 are complete. Load characterization module is locked in.
+- Proceeding through Phase 2 (Calculation Engine) sequentially.
