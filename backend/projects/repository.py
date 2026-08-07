@@ -245,20 +245,19 @@ async def delete_project(project_id: str, confirm_name: str) -> bool:
     if existing_doc is None:
         logger.info("Delete rejected: project '%s' not found.", project_id)
         return False
-
     if existing_doc.get("name") != confirm_name:
         logger.info(
             "Delete rejected: name mismatch for project '%s' (confirm_name did not match stored name).",
             project_id,
         )
         return False
-
-    delete_result = await collection.delete_one({"_id": oid})
+    delete_result = await collection.delete_one({"_id": oid, "name": confirm_name})
     success = delete_result.deleted_count == 1
     if success:
         logger.info("Project deleted: id=%s", project_id)
+    else:
+        logger.info("Delete rejected: project '%s' changed during confirmation.", project_id)
     return success
-
 
 # ---------------------------------------------------------------------------
 # CALCULATION RESULT PERSISTENCE

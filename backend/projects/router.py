@@ -282,10 +282,10 @@ class RecommendResponse(BaseModel):
 class CommitRequest(BaseModel):
     battery_id: str
     inverter_id: str
-    cable_length_m: float = Field(default=5.0, ge=0.1)
-    charge_current_a: float = Field(default=0.0, ge=0.0)
-    charge_window_hours: float = Field(default=0.0, ge=0.0)
-    components_colocated: bool = Field(default=False)
+    cable_length_m: float = Field(..., ge=0.1)
+    charge_current_a: float = Field(..., ge=0.0)
+    charge_window_hours: float = Field(..., ge=0.0)
+    components_colocated: bool = Field(...)
 
 
 @router.post("/{project_id}/calculate")
