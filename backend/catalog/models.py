@@ -88,9 +88,12 @@ class InverterCatalog(BaseModel):
     lvd_threshold_v: Optional[float] = Field(
         default=None,
         gt=0,
+        allow_inf_nan=False,
         description=(
             "Low-voltage-disconnect threshold. Used for LVD coordination "
-            "against the battery's end-of-discharge voltage."
+            "against the battery's end-of-discharge voltage. allow_inf_nan=False "
+            "so a +inf value can't trivially satisfy the LVD hard gate in "
+            "backend/catalog/matcher.py for any finite battery voltage."
         ),
     )
     certifications: List[str] = Field(
