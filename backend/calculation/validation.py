@@ -3,7 +3,7 @@ Calculation Engine - Module 5: Cross-Module Validation
 Implements Part G of the Battery & Inverter Sizing Engineering Specification.
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 
 def validate_system_design(
     load_result: Dict[str, Any],
@@ -20,7 +20,7 @@ def validate_system_design(
     inverter_surge_limit_a: float = 0.0,
     cable_rating_a: float = 0.0,
     fuse_rating_a: float = 0.0,
-    autonomy_days: float = 1.0
+    inverter_efficiency: float = 1.0
 ) -> Dict[str, Any]:
     """
     Executes cross-module system validation.
@@ -56,8 +56,9 @@ def validate_system_design(
 
     # 3. Surge Current Path Validation
     surge_va = load_result.get("surge_apparent_power_va", 0.0)
-    if v_bank_actual > 0 and surge_va > 0:
-        i_surge_required = surge_va / v_bank_actual
+    if v_bank_actual > 0 and surge_va > 0 and inverter_efficiency > 0:
+        # Convert AC apparent power to DC surge current using inverter efficiency
+        i_surge_required = surge_va / (v_bank_actual * inverter_efficiency)
 
         if battery_surge_limit_a > 0 and i_surge_required > battery_surge_limit_a:
             aggregated_hard_errors.append(
@@ -77,13 +78,8 @@ def validate_system_design(
             )
 
     # 4. Recharge Feasibility Check
-    # T_recharge = (Ah_discharged * 1.1) / I_charge_available
-    # Uses actual discharged Ah (not margin-inclusive ah_required). 
-    # Fallback calculation if battery_result doesn't explicitly expose ah_discharged.
-    ah_discharged = battery_result.get("ah_discharged")
-    if not ah_discharged:
-        daily_energy = load_result.get("daily_energy_wh", 0.0)
-        ah_discharged = (daily_energy / system_design_voltage) * autonomy_days if system_design_voltage > 0 else 0.0
+    # Consumes actual discharged Ah output strictly from the battery module
+    ah_discharged = battery_result.get("ah_discharged", 0.0)
     
     if charge_current_a > 0 and charge_window_hours > 0 and ah_discharged > 0:
         # 1.1 factor accounts for charge inefficiency (Coulombic efficiency)
@@ -125,7 +121,7 @@ def validate_system_design(
             "system_design_voltage": system_design_voltage,
             "recharge_feasible": (
                 ((ah_discharged * 1.1) / charge_current_a <= charge_window_hours)
-                if (charge_current_a > 0 and charge_window_hours > 0) else None
+                if (charge_current_a > 0 and charge_window_hours > 0 and ah_discharged > 0) else None
             )
         }
     }
