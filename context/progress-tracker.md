@@ -3,10 +3,10 @@
 Update this file after every meaningful implementation change.
 
 ## Current Phase
-- In progress: Phase 1 - Project Setup & Initial Infrastructure
+- In progress: Phase 2 - Calculation Engine (Phase 1 Foundation complete)
 
 ## Current Goal
-- Transition from static constants to establishing the data models (Pydantic) for the MongoDB collections.
+- Implement the pure mathematical functions of the calculation engine, starting with load characterization and energy demand math.
 
 ## Completed
 - **Infrastructure:** Initialized frontend with React + Vite (Plain JavaScript, no TypeScript).
@@ -19,12 +19,13 @@ Update this file after every meaningful implementation change.
 - **Infrastructure:** Installed required backend dependencies (`fastapi[standard]`, `pydantic`, `pymongo`, `pandas`, `reportlab`) and generated `requirements.txt`.
 - **Infrastructure:** Scaffolded standard backend module folders (`calculation`, `catalog`, `csv`, `projects`, `report`) and `__init__.py` files via PowerShell.
 - **Feature 01 (Backend Constants):** Created `backend/calculation/constants.py` with strict IEEE/NEC standard engineering defaults (Power Factors, Surge Multipliers, Battery Chemistry limits, Temp correction).
+- **Feature 02 (Backend Data Models):** Created Pydantic models in `backend/projects/models.py` and `backend/catalog/models.py` to define the exact shapes of MongoDB collections (`projects`, `equipment_catalog`, `battery_catalog`, `inverter_catalog`).
 
 ## In Progress
-- **Feature 02 (Backend Data Models):** Defining the database schemas and data validation layer for MongoDB collections.
+- **Feature 03 (Backend Calculation):** Implementing load characterization (`load.py`).
 
 ## Next Up
-- **Feature 02 (Backend Data Models):** Create the Pydantic models in `backend/projects/models.py` and `backend/catalog/*.py` to define the shapes for our four MongoDB collections (`projects`, `equipment_catalog`, `battery_catalog`, `inverter_catalog`) based on the data model spec.
+- **Feature 03 (Backend Calculation):** Create `backend/calculation/load.py` to aggregate `LoadItem` data, apply constants, and calculate Peak VA, Surge VA, and Daily Energy.
 
 ## Open Questions
 - None at present.
@@ -36,10 +37,10 @@ Update this file after every meaningful implementation change.
 - **Git Strategy:** Utilizing feature branch workflows; Pull Requests into `main` trigger CodeRabbit automated code reviews.
 - **Backend Architecture:** Created strict folder separation (`calculation/`, `projects/`, etc.) per `code-standards.md` to ensure pure functions and API logic do not mix.
 - **Database Driver:** Using `pymongo` (`AsyncMongoClient`) for fully asynchronous non-blocking interactions with MongoDB, adapting to modern ecosystem standards.
-- **Data Layers (Feature 01):** Decided to keep generic, immutable IEEE/NEC engineering defaults hardcoded in `constants.py` as a fail-safe baseline, while dynamic manufacturer-specific equipment specs will be stored in MongoDB for easy admin updates.
+- **Data Layers (Feature 01 & 02):** Decided to keep generic, immutable IEEE/NEC engineering defaults hardcoded in `constants.py` as a fail-safe baseline, while dynamic manufacturer-specific equipment specs and user project configurations are strictly typed with Pydantic and stored in MongoDB.
 
 ## Session Notes
 - Both `/frontend` and `/backend` foundations are 100% complete and version-controlled.
 - Virtual environment `venv` created inside `/backend`. Must be activated before running backend servers or installing new pip packages.
-- Overcame PowerShell-specific folder creation quirks; architecture is stable. 
-- Feature 01 is complete. We now have our foundational math constants locked in.
+- Feature 01 and Feature 02 are complete. Foundational math constants and data schemas are locked in.
+- Transitioning from Phase 1 (Foundation) to Phase 2 (Calculation Engine).

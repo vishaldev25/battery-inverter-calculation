@@ -13,7 +13,7 @@ from backend.calculation.constants import LoadCategory, BatteryChemistry
 class EquipmentCatalog(BaseModel):
     """Catalog model for standard household/commercial load defaults."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     id: Optional[str] = Field(default=None, alias="_id", description="MongoDB Document ID")
     name: str = Field(..., description="Name/description of the appliance or equipment")
@@ -29,7 +29,7 @@ class EquipmentCatalog(BaseModel):
 class BatteryCatalog(BaseModel):
     """Catalog model for specific battery products and manufacturer specs."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     id: Optional[str] = Field(default=None, alias="_id", description="MongoDB Document ID")
     make: str = Field(..., description="Manufacturer / Brand name")
@@ -55,7 +55,7 @@ class BatteryCatalog(BaseModel):
 class InverterCatalog(BaseModel):
     """Catalog model for specific inverter products and manufacturer specs."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     id: Optional[str] = Field(default=None, alias="_id", description="MongoDB Document ID")
     make: str = Field(..., description="Manufacturer / Brand name")
