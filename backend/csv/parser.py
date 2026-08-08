@@ -41,7 +41,7 @@ def parse_csv_bytes(file_bytes: bytes) -> pd.DataFrame:
         raise CsvStructureError("The uploaded file is empty.")
 
     try:
-        df = pd.read_csv(io.BytesIO(file_bytes), dtype=str, keep_default_na=True)
+        df = pd.read_csv(io.BytesIO(file_bytes), dtype=str, keep_default_na=False)
     except pd.errors.EmptyDataError:
         raise CsvStructureError("The uploaded file has no readable header row or data.")
     except pd.errors.ParserError as exc:

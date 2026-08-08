@@ -26,7 +26,17 @@ class LoadItem(BaseModel):
     category: LoadCategory = Field(default=LoadCategory.RESISTIVE, description="Equipment category")
     quantity: int = Field(default=1, ge=1, description="Number of identical units")
     nominal_watts: float = Field(..., gt=0, description="Nominal power rating per unit in Watts")
-    power_factor: float = Field(default=1.0, gt=0, le=1.0, description="Power factor (0.0 to 1.0]")
+    power_factor: Optional[float] = Field(
+    default=None,
+    gt=0,
+    le=1.0,
+    description=(
+        "Explicit power factor override (0.0–1.0]. Leave unset (null) to use "
+        "the category-based default from LOAD_CHARACTERISTICS (Part C of the "
+        "sizing spec / Architecture Invariant 3) — power factor is never a "
+        "free-text guess, only an explicit override or a validated default."
+        ),
+    )
     daily_hours: float = Field(default=1.0, ge=0.0, le=24.0, description="Average operating hours per day")
     surge_multiplier: float = Field(default=1.0, ge=1.0, description="Inrush/surge starting factor")
     is_concurrent: bool = Field(default=True, description="Whether this load contributes to peak concurrent demand")
