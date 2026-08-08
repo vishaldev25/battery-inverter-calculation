@@ -5,7 +5,7 @@ Implements Part B and C of the Battery & Inverter Sizing Engineering Specificati
 
 from typing import List, Dict, Any
 from backend.projects.models import LoadItem
-from backend.calculation.constants import LoadCategory
+from backend.calculation.constants import LoadCategory, LOAD_CHARACTERISTICS
 
 def calculate_load_profile(loads: List[LoadItem]) -> Dict[str, Any]:
     """
@@ -32,9 +32,9 @@ def calculate_load_profile(loads: List[LoadItem]) -> Dict[str, Any]:
             hard_errors.append(f"Load '{load.name}' has invalid nominal watts: {load.nominal_watts}. Must be > 0.")
         if not (0 <= load.daily_hours <= 24):
             hard_errors.append(f"Load '{load.name}' has invalid daily hours: {load.daily_hours}. Must be between 0 and 24.")
-        if load.power_factor <= 0 or load.power_factor > 1.0:
+        if load.power_factor is not None and (load.power_factor <= 0 or load.power_factor > 1.0):
              hard_errors.append(f"Load '{load.name}' has invalid power factor: {load.power_factor}. Must be > 0 and <= 1.0.")
-        
+
         if not load.is_concurrent:
             all_concurrent = False
 
@@ -49,16 +49,25 @@ def calculate_load_profile(loads: List[LoadItem]) -> Dict[str, Any]:
     for load in loads:
         # Pydantic model uses a boolean `is_concurrent` which maps to SF=1.0 or SF=0.0 for peak calculations.
         sf_peak = 1.0 if load.is_concurrent else 0.0
-        
+
+        # Resolve power_factor from category defaults if unset
+        power_factor = load.power_factor
+        if power_factor is None:
+            category_defaults = LOAD_CHARACTERISTICS.get(load.category)
+            if category_defaults:
+                power_factor = category_defaults[0]  # First tuple element is default PF
+            else:
+                power_factor = 1.0  # Fallback if category not in LOAD_CHARACTERISTICS
+
         # Ei = Pi * qty * ti (Energy is consumed regardless of peak overlap)
         energy_i = load.nominal_watts * load.quantity * load.daily_hours
         total_daily_energy_wh += energy_i
-        
+
         # P_peak = sum(Pi * qty * SFi)
         peak_real_power_w += (load.nominal_watts * load.quantity * sf_peak)
-        
+
         # S_peak = sum((Pi * qty * SFi) / PFi)
-        peak_apparent_power_va += (load.nominal_watts * load.quantity * sf_peak) / load.power_factor
+        peak_apparent_power_va += (load.nominal_watts * load.quantity * sf_peak) / power_factor
 
     # 3. Surge Calculation
     # S_surge = max_k [ (P_k * M_k) + sum_j!=k (P_j * qty_j * SF_j / PF_j) ]
@@ -76,14 +85,22 @@ def calculate_load_profile(loads: List[LoadItem]) -> Dict[str, Any]:
             # Component 1: The single surging motor
             # Note: Surge multiplier (M_k) applies to the base nominal watts
             surge_k_va = load_k.nominal_watts * load_k.surge_multiplier
-            
+
             # Component 2: All other loads running concurrently
             background_va = 0.0
             for j, load_j in enumerate(loads):
                 if j != k:
                     sf_j = 1.0 if load_j.is_concurrent else 0.0
-                    background_va += (load_j.nominal_watts * load_j.quantity * sf_j) / load_j.power_factor
-            
+                    # Resolve power_factor from category defaults if unset
+                    pf_j = load_j.power_factor
+                    if pf_j is None:
+                        category_defaults = LOAD_CHARACTERISTICS.get(load_j.category)
+                        if category_defaults:
+                            pf_j = category_defaults[0]
+                        else:
+                            pf_j = 1.0
+                    background_va += (load_j.nominal_watts * load_j.quantity * sf_j) / pf_j
+
             candidate_surge_va = surge_k_va + background_va
             if candidate_surge_va > max_surge_va:
                 max_surge_va = candidate_surge_va
