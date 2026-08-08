@@ -7,6 +7,20 @@ from typing import List, Dict, Any
 from backend.projects.models import LoadItem
 from backend.calculation.constants import LoadCategory, LOAD_CHARACTERISTICS
 
+
+def _resolve_power_factor(load: LoadItem) -> float:
+    """
+    Resolves the effective power factor for a load: the explicit override
+    if the user supplied one, otherwise the category-based default from
+    LOAD_CHARACTERISTICS (Part C). This is the single point where PF
+    ambiguity is resolved — nothing downstream should read
+    `load.power_factor` directly, since it may be None.
+    """
+    if load.power_factor is not None:
+        return load.power_factor
+    return LOAD_CHARACTERISTICS[load.category][0]
+
+
 def calculate_load_profile(loads: List[LoadItem]) -> Dict[str, Any]:
     """
     Aggregates a list of LoadItems to calculate daily energy, peak demand, and surge demand.
@@ -14,11 +28,11 @@ def calculate_load_profile(loads: List[LoadItem]) -> Dict[str, Any]:
     """
     warnings: List[str] = []
     hard_errors: List[str] = []
-    
+
     total_daily_energy_wh = 0.0
     peak_real_power_w = 0.0
     peak_apparent_power_va = 0.0
-    
+
     # 1. Validation Pre-pass
     if not loads:
         hard_errors.append("Load list is empty. Cannot perform sizing calculations.")
@@ -32,8 +46,13 @@ def calculate_load_profile(loads: List[LoadItem]) -> Dict[str, Any]:
             hard_errors.append(f"Load '{load.name}' has invalid nominal watts: {load.nominal_watts}. Must be > 0.")
         if not (0 <= load.daily_hours <= 24):
             hard_errors.append(f"Load '{load.name}' has invalid daily hours: {load.daily_hours}. Must be between 0 and 24.")
+        # power_factor may legitimately be None (category default applies) —
+        # only range-check it when the user gave an explicit override.
+        # (Pydantic's gt=0/le=1.0 on the field already enforces this at the
+        # model boundary; this check stays as defense-in-depth, mirroring
+        # the explicit nominal_watts/daily_hours checks above.)
         if load.power_factor is not None and (load.power_factor <= 0 or load.power_factor > 1.0):
-             hard_errors.append(f"Load '{load.name}' has invalid power factor: {load.power_factor}. Must be > 0 and <= 1.0.")
+            hard_errors.append(f"Load '{load.name}' has invalid power factor: {load.power_factor}. Must be > 0 and <= 1.0.")
 
         if not load.is_concurrent:
             all_concurrent = False
@@ -47,19 +66,12 @@ def calculate_load_profile(loads: List[LoadItem]) -> Dict[str, Any]:
 
     # 2. Base Accumulations
     for load in loads:
+        effective_pf = _resolve_power_factor(load)
+
         # Pydantic model uses a boolean `is_concurrent` which maps to SF=1.0 or SF=0.0 for peak calculations.
         sf_peak = 1.0 if load.is_concurrent else 0.0
 
-        # Resolve power_factor from category defaults if unset
-        power_factor = load.power_factor
-        if power_factor is None:
-            category_defaults = LOAD_CHARACTERISTICS.get(load.category)
-            if category_defaults:
-                power_factor = category_defaults[0]  # First tuple element is default PF
-            else:
-                power_factor = 1.0  # Fallback if category not in LOAD_CHARACTERISTICS
-
-        # Ei = Pi * qty * ti (Energy is consumed regardless of peak overlap)
+        # Ei = Pi * qty * ti (Energy is consumed regardless of peak overlap; PF doesn't affect Wh)
         energy_i = load.nominal_watts * load.quantity * load.daily_hours
         total_daily_energy_wh += energy_i
 
@@ -67,19 +79,19 @@ def calculate_load_profile(loads: List[LoadItem]) -> Dict[str, Any]:
         peak_real_power_w += (load.nominal_watts * load.quantity * sf_peak)
 
         # S_peak = sum((Pi * qty * SFi) / PFi)
-        peak_apparent_power_va += (load.nominal_watts * load.quantity * sf_peak) / power_factor
+        peak_apparent_power_va += (load.nominal_watts * load.quantity * sf_peak) / effective_pf
 
     # 3. Surge Calculation
     # S_surge = max_k [ (P_k * M_k) + sum_j!=k (P_j * qty_j * SF_j / PF_j) ]
     # Evaluated across motor-type loads to find the worst case.
     motor_categories = {
-        LoadCategory.MOTOR_PUMP, 
-        LoadCategory.MOTOR_COMPRESSOR, 
+        LoadCategory.MOTOR_PUMP,
+        LoadCategory.MOTOR_COMPRESSOR,
         LoadCategory.HVAC
     }
-    
+
     max_surge_va = peak_apparent_power_va  # Baseline is standard peak if no motors surge
-    
+
     for k, load_k in enumerate(loads):
         if load_k.category in motor_categories:
             # Component 1: The single surging motor
@@ -91,14 +103,7 @@ def calculate_load_profile(loads: List[LoadItem]) -> Dict[str, Any]:
             for j, load_j in enumerate(loads):
                 if j != k:
                     sf_j = 1.0 if load_j.is_concurrent else 0.0
-                    # Resolve power_factor from category defaults if unset
-                    pf_j = load_j.power_factor
-                    if pf_j is None:
-                        category_defaults = LOAD_CHARACTERISTICS.get(load_j.category)
-                        if category_defaults:
-                            pf_j = category_defaults[0]
-                        else:
-                            pf_j = 1.0
+                    pf_j = _resolve_power_factor(load_j)
                     background_va += (load_j.nominal_watts * load_j.quantity * sf_j) / pf_j
 
             candidate_surge_va = surge_k_va + background_va
@@ -114,12 +119,13 @@ def calculate_load_profile(loads: List[LoadItem]) -> Dict[str, Any]:
         hard_errors=hard_errors
     )
 
+
 def _build_response(
-    daily_energy_wh: float, 
-    peak_real_power_w: float, 
-    peak_apparent_power_va: float, 
+    daily_energy_wh: float,
+    peak_real_power_w: float,
+    peak_apparent_power_va: float,
     surge_apparent_power_va: float,
-    warnings: List[str], 
+    warnings: List[str],
     hard_errors: List[str]
 ) -> Dict[str, Any]:
     """Helper to ensure consistent calculation output schema across the engine."""

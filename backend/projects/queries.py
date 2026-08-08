@@ -71,9 +71,12 @@ def _build_search_filter(q: Optional[str]) -> Dict[str, Any]:
     # Case-insensitive substring match on name only, per ui-context.md's
     # toolbar search being project-name search (distinct from the Filters
     # drawer, which is out of scope per Feature 14 decisions).
-    # Escape regex special characters to prevent ReDoS/injection.
-    escaped_query = re.escape(q.strip())
-    return {"name": {"$regex": escaped_query, "$options": "i"}}
+    # re.escape() prevents a user's search text from being interpreted as
+    # regex syntax (metacharacters like . * ( ) [ ] would otherwise either
+    # throw a $regex compile error or match unintended documents) — this
+    # is a substring search, not a regex search, from the user's perspective.
+    escaped = re.escape(q.strip())
+    return {"name": {"$regex": escaped, "$options": "i"}}
 
 
 def _build_tab_base_filter(tab: str) -> Dict[str, Any]:
@@ -116,15 +119,16 @@ async def _run_tab_query(
 
     total_count = await collection.count_documents(combined_filter)
 
-    # Descending sort on a nullable datetime field puts nulls last in
-    # MongoDB's BSON sort order (Null sorts below Date; descending reverses
-    # that, so actual dates surface first and never-opened projects fall
-    # to the end) — this is native Mongo behavior, not extra logic.
-    # Add _id as secondary sort key for deterministic pagination when
-    # multiple documents share the same sort_field value.
+    # Descending sort on a nullable/non-unique datetime field alone does not
+    # guarantee stable ordering across separate queries when values tie
+    # (e.g. multiple projects with last_opened_at=None, or the same
+    # created_at timestamp) — with skip/offset pagination that can cause a
+    # document to appear on two pages or be skipped entirely. Adding _id as
+    # a secondary sort key (unique, monotonically increasing) makes the
+    # full sort order deterministic without changing the primary tab sort.
     cursor = (
         collection.find(combined_filter)
-        .sort([(sort_field, -1), ("_id", 1)])
+        .sort([(sort_field, -1), ("_id", -1)])
         .skip(safe_offset)
         .limit(clamped_limit)
     )
