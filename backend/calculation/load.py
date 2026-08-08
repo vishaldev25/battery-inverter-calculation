@@ -6,7 +6,6 @@ Implements Part B and C of the Battery & Inverter Sizing Engineering Specificati
 from typing import List, Dict, Any
 from backend.projects.models import LoadItem
 from backend.calculation.constants import LoadCategory, LOAD_CHARACTERISTICS
-<<<<<<< HEAD
 
 
 def _resolve_power_factor(load: LoadItem) -> float:
@@ -21,8 +20,6 @@ def _resolve_power_factor(load: LoadItem) -> float:
         return load.power_factor
     return LOAD_CHARACTERISTICS[load.category][0]
 
-=======
->>>>>>> 4437a386006705a47b6a78345b49028a5294d69e
 
 def calculate_load_profile(loads: List[LoadItem]) -> Dict[str, Any]:
     """
@@ -49,7 +46,6 @@ def calculate_load_profile(loads: List[LoadItem]) -> Dict[str, Any]:
             hard_errors.append(f"Load '{load.name}' has invalid nominal watts: {load.nominal_watts}. Must be > 0.")
         if not (0 <= load.daily_hours <= 24):
             hard_errors.append(f"Load '{load.name}' has invalid daily hours: {load.daily_hours}. Must be between 0 and 24.")
-<<<<<<< HEAD
         # power_factor may legitimately be None (category default applies) —
         # only range-check it when the user gave an explicit override.
         # (Pydantic's gt=0/le=1.0 on the field already enforces this at the
@@ -57,10 +53,6 @@ def calculate_load_profile(loads: List[LoadItem]) -> Dict[str, Any]:
         # the explicit nominal_watts/daily_hours checks above.)
         if load.power_factor is not None and (load.power_factor <= 0 or load.power_factor > 1.0):
             hard_errors.append(f"Load '{load.name}' has invalid power factor: {load.power_factor}. Must be > 0 and <= 1.0.")
-=======
-        if load.power_factor is not None and (load.power_factor <= 0 or load.power_factor > 1.0):
-             hard_errors.append(f"Load '{load.name}' has invalid power factor: {load.power_factor}. Must be > 0 and <= 1.0.")
->>>>>>> 4437a386006705a47b6a78345b49028a5294d69e
 
         if not load.is_concurrent:
             all_concurrent = False
@@ -79,20 +71,7 @@ def calculate_load_profile(loads: List[LoadItem]) -> Dict[str, Any]:
         # Pydantic model uses a boolean `is_concurrent` which maps to SF=1.0 or SF=0.0 for peak calculations.
         sf_peak = 1.0 if load.is_concurrent else 0.0
 
-<<<<<<< HEAD
         # Ei = Pi * qty * ti (Energy is consumed regardless of peak overlap; PF doesn't affect Wh)
-=======
-        # Resolve power_factor from category defaults if unset
-        power_factor = load.power_factor
-        if power_factor is None:
-            category_defaults = LOAD_CHARACTERISTICS.get(load.category)
-            if category_defaults:
-                power_factor = category_defaults[0]  # First tuple element is default PF
-            else:
-                power_factor = 1.0  # Fallback if category not in LOAD_CHARACTERISTICS
-
-        # Ei = Pi * qty * ti (Energy is consumed regardless of peak overlap)
->>>>>>> 4437a386006705a47b6a78345b49028a5294d69e
         energy_i = load.nominal_watts * load.quantity * load.daily_hours
         total_daily_energy_wh += energy_i
 
@@ -100,11 +79,7 @@ def calculate_load_profile(loads: List[LoadItem]) -> Dict[str, Any]:
         peak_real_power_w += (load.nominal_watts * load.quantity * sf_peak)
 
         # S_peak = sum((Pi * qty * SFi) / PFi)
-<<<<<<< HEAD
         peak_apparent_power_va += (load.nominal_watts * load.quantity * sf_peak) / effective_pf
-=======
-        peak_apparent_power_va += (load.nominal_watts * load.quantity * sf_peak) / power_factor
->>>>>>> 4437a386006705a47b6a78345b49028a5294d69e
 
     # 3. Surge Calculation
     # S_surge = max_k [ (P_k * M_k) + sum_j!=k (P_j * qty_j * SF_j / PF_j) ]
@@ -128,18 +103,7 @@ def calculate_load_profile(loads: List[LoadItem]) -> Dict[str, Any]:
             for j, load_j in enumerate(loads):
                 if j != k:
                     sf_j = 1.0 if load_j.is_concurrent else 0.0
-<<<<<<< HEAD
                     pf_j = _resolve_power_factor(load_j)
-=======
-                    # Resolve power_factor from category defaults if unset
-                    pf_j = load_j.power_factor
-                    if pf_j is None:
-                        category_defaults = LOAD_CHARACTERISTICS.get(load_j.category)
-                        if category_defaults:
-                            pf_j = category_defaults[0]
-                        else:
-                            pf_j = 1.0
->>>>>>> 4437a386006705a47b6a78345b49028a5294d69e
                     background_va += (load_j.nominal_watts * load_j.quantity * sf_j) / pf_j
 
             candidate_surge_va = surge_k_va + background_va
