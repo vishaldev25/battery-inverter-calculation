@@ -1,4 +1,3 @@
-```markdown
 # Feature 14 — Dashboard Tab & Filter Queries
 
 **Status:** Spec for review — no code yet, per workflow rules.
@@ -57,7 +56,7 @@ Added to the existing `backend/projects/router.py` (same file Feature 12 already
 
 ### 3.1 Query parameters for `GET /api/projects`
 
-```
+```text
 tab       : "all" | "recent" | "favorites" | "edited"   (required)
 date_from : ISO date string, optional
 date_to   : ISO date string, optional
@@ -131,4 +130,3 @@ This is implemented as a small `_DATE_FIELD_BY_TAB` mapping inside `queries.py`,
 - Confirm pagination: `limit=2&offset=0` then `limit=2&offset=2` on a 5-project seed returns non-overlapping pages that together account for all 5, and `total_count` reports `5` on both calls.
 - Confirm `PATCH .../opened` updates `last_opened_at` only — `updated_at` and `version_history` must be provably unchanged before/after the call.
 - Confirm no calculation or catalog logic was touched — this unit only reads/queries `projects` (plus the one narrow `opened` write), never calculates, never touches catalogs.
-```
