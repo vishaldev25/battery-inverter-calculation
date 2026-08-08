@@ -10,7 +10,7 @@ Mirrors the boundary discipline of backend/catalog/matcher.py:
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from bson import ObjectId
@@ -21,6 +21,16 @@ from backend.projects.models import Project, VersionHistoryEntry
 
 logger = logging.getLogger("backend.projects.repository")
 
+def _utc_now() -> datetime:
+    """Timezone-aware UTC 'now', replacing the deprecated datetime.utcnow().
+    Mirrors backend/projects/models.py's helper — kept as a small local
+    duplicate rather than a cross-module import, since both files already
+    have zero dependency on each other's internals beyond the Project model
+    itself, and a two-line helper isn't worth adding a new shared-utils
+    module for (code-standards.md's "keep modules small" cuts both ways —
+    avoid over-abstracting a one-liner).
+    """
+    return datetime.now(timezone.utc)
 
 def _to_object_id(project_id: str) -> Optional[ObjectId]:
     """
@@ -52,7 +62,7 @@ async def create_project(project: Project) -> Project:
     generates the identity on create; a client-supplied id here would be a
     spoofing/collision risk with no legitimate use case in this unit.
     """
-    now = datetime.utcnow()
+    now = _utc_now()
     payload = project.model_dump(by_alias=True, exclude={"id"})
     payload["created_at"] = now
     payload["updated_at"] = now
@@ -107,7 +117,7 @@ async def replace_project(project_id: str, updated: Project) -> Optional[Project
     if existing_doc is None:
         return None
 
-    now = datetime.utcnow()
+    now = _utc_now()
     version_entry = VersionHistoryEntry(
         edited_at=now,
         summary=_summarize_replace(existing_doc, updated),
@@ -189,6 +199,28 @@ async def set_favorite(project_id: str, is_favorite: bool) -> Optional[Project]:
     return _doc_to_project(result)
 
 
+async def mark_project_opened(project_id: str) -> Optional[Project]:
+    """
+    Sets last_opened_at = now(). Deliberately does NOT touch updated_at or
+    version_history — viewing a project isn't editing it, same reasoning
+    as set_favorite (Feature 12 spec §3.3). Feature 12 explicitly deferred
+    this write path since no view/open route existed yet; Feature 14 is
+    where it becomes necessary (Recent tab has nothing to sort by without it).
+    """
+    oid = _to_object_id(project_id)
+    if oid is None:
+        return None
+
+    result = await get_projects_collection().find_one_and_update(
+        {"_id": oid},
+        {"$set": {"last_opened_at": _utc_now()}},
+        return_document=True,
+    )
+    if result is None:
+        return None
+    logger.info("Project marked opened: id=%s", project_id)
+    return _doc_to_project(result)
+
 async def set_status(project_id: str, status: str) -> Optional[Project]:
     """
     Single-field write, but DOES trigger updated_at + version_history —
@@ -205,7 +237,7 @@ async def set_status(project_id: str, status: str) -> Optional[Project]:
         return None
 
     old_status = existing_doc.get("status")
-    now = datetime.utcnow()
+    now = _utc_now()
     version_entry = VersionHistoryEntry(
         edited_at=now,
         summary=f"Status changed: {old_status} → {status}",
@@ -274,7 +306,7 @@ async def save_calculation_result(project_id: str, result: Dict[str, Any]) -> Op
     if oid is None:
         return None
 
-    now = datetime.utcnow()
+    now = _utc_now()
     hard_error_count = len(result.get("hard_errors", []))
     warning_count = len(result.get("warnings", []))
     version_entry = VersionHistoryEntry(

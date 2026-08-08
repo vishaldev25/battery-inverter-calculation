@@ -6,7 +6,7 @@ formula/sequencing duplication, per Invariant 1.
 """
 
 from typing import Dict, Any, List, Optional
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Query
 from pydantic import BaseModel, Field
 
 from backend.projects.models import LoadItem, ProjectParameters, Project
@@ -21,6 +21,9 @@ from backend.calculation.constants import FUTURE_EXPANSION_FACTOR
 
 from backend.projects import repository
 from backend.catalog import matcher
+
+from datetime import datetime
+from backend.projects import queries as project_queries
 
 router = APIRouter(prefix="/api/projects", tags=["Calculation Engine"])
 
@@ -433,3 +436,50 @@ async def commit_calculation_endpoint(project_id: str, payload: CommitRequest) -
     if updated_project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     return updated_project
+
+
+# ===========================================================================
+# FEATURE 14 — Dashboard Tab & Filter Queries
+# ===========================================================================
+
+class ProjectListResponse(BaseModel):
+    items: List[Project]
+    total_count: int
+    limit: int
+    offset: int
+
+
+@router.get("", response_model=ProjectListResponse)
+async def list_projects_endpoint(
+    tab: str = Query(..., pattern="^(all|recent|favorites|edited)$"),
+    date_from: Optional[datetime] = Query(default=None),
+    date_to: Optional[datetime] = Query(default=None),
+    q: Optional[str] = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> ProjectListResponse:
+    """
+    Dashboard listing for one of four tabs (all/recent/favorites/edited).
+    Date range filters against the tab's own primary timestamp (see
+    queries.py's _DATE_FIELD_BY_TAB) — not a single hardcoded field.
+    Search matches project name only (case-insensitive substring).
+    Standard limit/offset pagination; total_count returned for page controls.
+    """
+    query_fn = project_queries.TAB_DISPATCH[tab]
+    items, total_count = await query_fn(
+        date_from=date_from, date_to=date_to, q=q, limit=limit, offset=offset
+    )
+    return ProjectListResponse(items=items, total_count=total_count, limit=limit, offset=offset)
+
+
+@router.patch("/{project_id}/opened", response_model=Project)
+async def mark_project_opened_endpoint(project_id: str) -> Project:
+    """
+    Sets last_opened_at on project view/open. Does NOT trigger
+    version_history — viewing isn't editing, mirrors set_favorite's
+    precedent from Feature 12.
+    """
+    result = await repository.mark_project_opened(project_id)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    return result
