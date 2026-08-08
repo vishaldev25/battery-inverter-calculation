@@ -1,4 +1,3 @@
-```markdown
 # Feature 13 — CSV Template Generation, Parsing & Row-Level Validation
 
 **Status:** Spec for review — no code yet, per workflow rules.
@@ -45,7 +44,7 @@ Checked directly against your pasted source files — nothing below is inferred 
 `id` is **not** a CSV column — it's a client-assigned identifier per `LoadItem`'s own docstring ("Unique client-side item identifier"), not something a CSV row provides. It stays unset (`None`) for every row this module produces.
 
 **Source: `backend/calculation/constants.py` → `LoadCategory` enum values (case-sensitive, exact match required)**
-```
+```text
 resistive, lighting_incandescent, lighting_led, motor_pump,
 motor_compressor, electronics_it, hvac, heating_resistive
 ```
@@ -65,7 +64,7 @@ Neither is treated as something to "fix" in this unit — that would be a `backe
 ## 4. Files to create
 
 ### 4.1 `backend/csv/models.py` — response schema
-```
+```python
 CsvRowError:
     row_number: int        # 1-indexed, matching spreadsheet row (header = row 1, first data row = 2)
     raw_data: dict          # original row values exactly as submitted
@@ -125,4 +124,3 @@ None outstanding — unlike Feature 12, every field/type/constraint needed for t
 - Parser: confirm an empty file and a bad-header file each produce their own specific structural error (not the same generic message); confirm a well-formed file with valid rows produces a DataFrame with the expected row count.
 - Validator: run against a small hand-built CSV containing at least one of each — a fully valid row, a row with a bad `category` value, a row with `nominal_watts <= 0`, a row with `nominal_watts` missing entirely, and a row with `power_factor`/`is_concurrent`/`daily_hours` left blank (confirming Pydantic defaults apply correctly, not silently omitted). Confirm `valid_count + invalid_count == total_rows` always holds.
 - Confirm no formula or constant from `backend/calculation/` is duplicated inside `backend/csv/` (this unit only checks structural/type validity, it never computes `E_day`, PF-derived values, etc.) — satisfies `code-standards.md`'s no-duplication rule.
-```

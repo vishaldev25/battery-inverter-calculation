@@ -14,6 +14,9 @@ from backend.projects.models import LoadItem
 # Fields where a blank/missing cell should fall through to LoadItem's own
 # Pydantic default, rather than being passed through as an empty string
 # (which would fail type coercion instead of applying the default).
+# Note: power_factor defaults to None when blank, allowing calculate_load_profile()
+# to resolve the category-specific default from LOAD_CHARACTERISTICS (e.g., 0.80
+# for motor_pump) instead of using LoadItem's hardcoded fallback.
 OPTIONAL_FIELDS_WITH_DEFAULTS = {
     "category",
     "quantity",

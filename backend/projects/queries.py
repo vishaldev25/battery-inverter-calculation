@@ -14,6 +14,7 @@ helpers too, not just formulas.
 """
 
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -70,7 +71,9 @@ def _build_search_filter(q: Optional[str]) -> Dict[str, Any]:
     # Case-insensitive substring match on name only, per ui-context.md's
     # toolbar search being project-name search (distinct from the Filters
     # drawer, which is out of scope per Feature 14 decisions).
-    return {"name": {"$regex": q.strip(), "$options": "i"}}
+    # Escape regex special characters to prevent ReDoS/injection.
+    escaped_query = re.escape(q.strip())
+    return {"name": {"$regex": escaped_query, "$options": "i"}}
 
 
 def _build_tab_base_filter(tab: str) -> Dict[str, Any]:
@@ -117,9 +120,11 @@ async def _run_tab_query(
     # MongoDB's BSON sort order (Null sorts below Date; descending reverses
     # that, so actual dates surface first and never-opened projects fall
     # to the end) — this is native Mongo behavior, not extra logic.
+    # Add _id as secondary sort key for deterministic pagination when
+    # multiple documents share the same sort_field value.
     cursor = (
         collection.find(combined_filter)
-        .sort(sort_field, -1)
+        .sort([(sort_field, -1), ("_id", 1)])
         .skip(safe_offset)
         .limit(clamped_limit)
     )
