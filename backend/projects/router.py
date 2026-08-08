@@ -576,20 +576,32 @@ async def upload_csv_loads_endpoint(project_id: str, file: UploadFile = File(...
             },
         )
 
-    file_bytes = await file.read()
+    # --- Bounded chunked reading with cumulative size tracking ---
+    # Reads uploaded bytes in chunks, enforcing _CSV_MAX_UPLOAD_BYTES limit
+    # before parsing (defense-in-depth: ASGI server or reverse proxy should
+    # also set a request-body limit, e.g., uvicorn --limit-max-requests or
+    # nginx client_max_body_size).
+    file_bytes = b""
+    chunk_size = 64 * 1024  # 64 KB chunks
+    cumulative_size = 0
 
-    # --- Defensive size guard, before any parsing is attempted ---
-    if len(file_bytes) > _CSV_MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "message": (
-                    f"Upload exceeds the maximum allowed size of "
-                    f"{_CSV_MAX_UPLOAD_BYTES // (1024 * 1024)} MB."
-                ),
-                "template_url": _CSV_TEMPLATE_URL,
-            },
-        )
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        cumulative_size += len(chunk)
+        if cumulative_size > _CSV_MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail={
+                    "message": (
+                        f"Upload exceeds the maximum allowed size of "
+                        f"{_CSV_MAX_UPLOAD_BYTES // (1024 * 1024)} MB."
+                    ),
+                    "template_url": _CSV_TEMPLATE_URL,
+                },
+            )
+        file_bytes += chunk
 
     if len(file_bytes) == 0:
         raise HTTPException(
@@ -633,19 +645,13 @@ async def upload_csv_loads_endpoint(project_id: str, file: UploadFile = File(...
             validation_result=validation_result,
         )
 
-    # --- All rows valid: append to the project's existing loads (additive,
-    # not replace — per spec §4) and persist via the existing Feature 12
-    # replace_project path, so updated_at/version_history update exactly
-    # as they do for any other project edit. ---
-    updated_loads = list(project.loads) + list(validation_result.valid_rows)
-    updated_project = Project(
-        name=project.name,
-        description=project.description,
-        loads=updated_loads,
-        parameters=project.parameters,
-    )
-
-    result = await repository.replace_project(project_id, updated_project)
+    # --- All rows valid: atomically append to the project's loads array
+    # using repository.append_loads_atomic (MongoDB $push + $each), which
+    # updates updated_at and version_history in the same operation without
+    # reading a full-project snapshot first. This prevents lost concurrent
+    # updates to other fields (name, description, parameters). ---
+    new_loads_dicts = [load.model_dump() for load in validation_result.valid_rows]
+    result = await repository.append_loads_atomic(project_id, new_loads_dicts)
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
