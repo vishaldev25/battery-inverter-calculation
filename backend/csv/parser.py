@@ -46,6 +46,8 @@ def parse_csv_bytes(file_bytes: bytes) -> pd.DataFrame:
         raise CsvStructureError("The uploaded file has no readable header row or data.")
     except pd.errors.ParserError as exc:
         raise CsvStructureError(f"The uploaded file could not be parsed as CSV: {exc}")
+    except UnicodeDecodeError as exc:
+        raise CsvStructureError(f"The uploaded file has invalid character encoding: {exc}")
 
     actual_columns = list(df.columns)
 

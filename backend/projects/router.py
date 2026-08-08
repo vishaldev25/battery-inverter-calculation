@@ -6,7 +6,8 @@ formula/sequencing duplication, per Invariant 1.
 """
 
 from typing import Dict, Any, List, Optional
-from fastapi import APIRouter, HTTPException, status, Query
+from fastapi import APIRouter, HTTPException, status, Query, UploadFile, File
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from backend.projects.models import LoadItem, ProjectParameters, Project
@@ -24,6 +25,12 @@ from backend.catalog import matcher
 
 from datetime import datetime
 from backend.projects import queries as project_queries
+
+# --- FEATURE 15 imports — reusing Feature 13's csv module exactly as built ---
+from backend.csv.parser import parse_csv_bytes, CsvStructureError
+from backend.csv.validator import validate_rows
+from backend.csv.template import generate_template_csv
+from backend.csv.models import CsvValidationResult
 
 router = APIRouter(prefix="/api/projects", tags=["Calculation Engine"])
 
@@ -211,6 +218,30 @@ class DeleteProjectRequest(BaseModel):
 async def create_project_endpoint(payload: CreateProjectRequest) -> Project:
     project = Project(name=payload.name, description=payload.description, loads=payload.loads, parameters=payload.parameters)
     return await repository.create_project(project)
+
+
+# --- FEATURE 15: registered here, BEFORE GET /{project_id}, deliberately.
+# FastAPI matches routes in registration order — a fixed-path route like
+# "/csv-template" must be declared before any "/{project_id}" route in the
+# same router, otherwise "/csv-template" is shadowed (project_id gets bound
+# to the literal string "csv-template" and this route is never reached).
+# This was the actual cause of the smoke test's Test 1a/1b/1c failures
+# (404 from get_project_endpoint, not a template-generation bug).
+@router.get("/csv-template")
+async def download_csv_template_endpoint() -> Response:
+    """
+    Streams Feature 13's generate_template_csv() output as a downloadable
+    file. Stateless — no project context needed. Bytes are returned exactly
+    as generate_template_csv() produces them, no transformation.
+    """
+    csv_bytes = generate_template_csv()
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": 'attachment; filename="load_upload_template.csv"'
+        },
+    )
 
 
 @router.get("/{project_id}", response_model=Project)
@@ -483,3 +514,149 @@ async def mark_project_opened_endpoint(project_id: str) -> Project:
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     return result
+
+
+# ===========================================================================
+# FEATURE 15 — CSV Upload Route Wiring
+# Two thin routes only. No new parsing/validation/calculation logic here —
+# both routes consume Feature 13's backend/csv/ functions exactly as built.
+# Boundary: backend/projects/ only, per the finalized Feature 15 spec.
+# ===========================================================================
+
+# Defensive limits (not engineering constraints — pure request-size guards,
+# per code-standards.md's "clear, specific error messages" rule).
+_CSV_MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
+_CSV_MAX_ROWS = 10_000
+
+_CSV_TEMPLATE_URL = "/api/projects/csv-template"
+
+
+class CsvUploadRejectedResponse(BaseModel):
+    committed: bool = False
+    template_url: str
+    validation_result: CsvValidationResult
+
+
+class CsvUploadCommittedResponse(BaseModel):
+    committed: bool = True
+    loads_added: int
+    project: Project
+
+
+# NOTE: GET /csv-template is registered earlier in this file, immediately
+# before GET /{project_id} — see the route-ordering comment there. It is
+# NOT duplicated here; only the upload route lives in this section.
+
+
+@router.post("/{project_id}/loads/csv-upload")
+async def upload_csv_loads_endpoint(project_id: str, file: UploadFile = File(...)):
+    """
+    Uploads a CSV of loads, validates every row against the real LoadItem
+    model (via Feature 13's validate_rows), and:
+      - invalid_count > 0  -> nothing saved; returns the full per-row
+        validation report plus a template_url so the user can fix and
+        re-upload (per spec §3 — strict all-or-nothing commit).
+      - invalid_count == 0 -> valid rows are APPENDED to the project's
+        existing loads list (per spec §4 — additive, matches
+        project-overview.md's manual-entry + CSV-upload complementary flow)
+        and saved via repository.replace_project.
+    """
+    project = await repository.get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    # --- Light extension check (UX only, not a security boundary — parser.py's
+    # structural checks below would already reject non-CSV content) ---
+    if file.filename and not file.filename.lower().endswith(".csv"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "message": f"'{file.filename}' does not appear to be a .csv file. Please upload a CSV file.",
+                "template_url": _CSV_TEMPLATE_URL,
+            },
+        )
+
+    # --- Bounded chunked reading with cumulative size tracking ---
+    # Reads uploaded bytes in chunks, enforcing _CSV_MAX_UPLOAD_BYTES limit
+    # before parsing (defense-in-depth: ASGI server or reverse proxy should
+    # also set a request-body limit, e.g., uvicorn --limit-max-requests or
+    # nginx client_max_body_size).
+    file_bytes = b""
+    chunk_size = 64 * 1024  # 64 KB chunks
+    cumulative_size = 0
+
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        cumulative_size += len(chunk)
+        if cumulative_size > _CSV_MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail={
+                    "message": (
+                        f"Upload exceeds the maximum allowed size of "
+                        f"{_CSV_MAX_UPLOAD_BYTES // (1024 * 1024)} MB."
+                    ),
+                    "template_url": _CSV_TEMPLATE_URL,
+                },
+            )
+        file_bytes += chunk
+
+    if len(file_bytes) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "message": "Uploaded file is empty.",
+                "template_url": _CSV_TEMPLATE_URL,
+            },
+        )
+
+    # --- Structural parsing (Feature 13's parser.py, used as-is) ---
+    try:
+        df = parse_csv_bytes(file_bytes)
+    except CsvStructureError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "message": exc.message if hasattr(exc, "message") else str(exc),
+                "template_url": _CSV_TEMPLATE_URL,
+            },
+        )
+
+    # --- Defensive row-count guard, before row-level validation ---
+    if len(df) > _CSV_MAX_ROWS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "message": f"Upload contains {len(df)} rows, exceeding the maximum of {_CSV_MAX_ROWS}.",
+                "template_url": _CSV_TEMPLATE_URL,
+            },
+        )
+
+    # --- Row-level validation (Feature 13's validator.py, used as-is) ---
+    validation_result: CsvValidationResult = validate_rows(df)
+
+    if validation_result.invalid_count > 0:
+        # Nothing saved — strict all-or-nothing per spec §3.
+        return CsvUploadRejectedResponse(
+            committed=False,
+            template_url=_CSV_TEMPLATE_URL,
+            validation_result=validation_result,
+        )
+
+    # --- All rows valid: atomically append to the project's loads array
+    # using repository.append_loads_atomic (MongoDB $push + $each), which
+    # updates updated_at and version_history in the same operation without
+    # reading a full-project snapshot first. This prevents lost concurrent
+    # updates to other fields (name, description, parameters). ---
+    new_loads_dicts = [load.model_dump() for load in validation_result.valid_rows]
+    result = await repository.append_loads_atomic(project_id, new_loads_dicts)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    return CsvUploadCommittedResponse(
+        committed=True,
+        loads_added=validation_result.valid_count,
+        project=result,
+    )

@@ -292,6 +292,55 @@ async def delete_project(project_id: str, confirm_name: str) -> bool:
     return success
 
 # ---------------------------------------------------------------------------
+# ATOMIC LOAD APPEND (for CSV upload / concurrent-safe operations)
+# ---------------------------------------------------------------------------
+
+async def append_loads_atomic(
+    project_id: str, new_loads: list
+) -> Optional[Project]:
+    """
+    Atomically appends new_loads to the project's loads array using MongoDB's
+    $push with $each, updating updated_at and appending a version_history
+    entry in the same operation. This prevents lost concurrent updates by
+    never reading a full-project snapshot and replacing it — other
+    concurrently-editable fields (name, description, parameters) remain
+    untouched.
+
+    Args:
+        project_id: The project's _id.
+        new_loads: List of LoadItem-compatible dicts (already validated).
+
+    Returns:
+        The updated Project, or None if project_id not found.
+    """
+    oid = _to_object_id(project_id)
+    if oid is None:
+        return None
+
+    now = _utc_now()
+    version_entry = VersionHistoryEntry(
+        edited_at=now,
+        summary=f"Added {len(new_loads)} load(s) via CSV upload",
+    )
+
+    result = await get_projects_collection().find_one_and_update(
+        {"_id": oid},
+        {
+            "$push": {
+                "loads": {"$each": new_loads},
+                "version_history": version_entry.model_dump(),
+            },
+            "$set": {"updated_at": now},
+        },
+        return_document=True,
+    )
+    if result is None:
+        return None
+    logger.info("Loads appended atomically: project_id=%s count=%d", project_id, len(new_loads))
+    return _doc_to_project(result)
+
+
+# ---------------------------------------------------------------------------
 # CALCULATION RESULT PERSISTENCE
 # ---------------------------------------------------------------------------
 
