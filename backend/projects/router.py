@@ -6,8 +6,11 @@ formula/sequencing duplication, per Invariant 1.
 """
 
 from typing import Dict, Any, List, Optional
+from datetime import datetime
+
 from fastapi import APIRouter, HTTPException, status, Query, UploadFile, File
 from fastapi.responses import Response
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from backend.projects.models import LoadItem, ProjectParameters, Project
@@ -22,8 +25,6 @@ from backend.calculation.constants import FUTURE_EXPANSION_FACTOR
 
 from backend.projects import repository
 from backend.catalog import matcher
-
-from datetime import datetime
 from backend.projects import queries as project_queries
 
 # --- FEATURE 15 imports — reusing Feature 13's csv module exactly as built ---
@@ -31,6 +32,9 @@ from backend.csv.parser import parse_csv_bytes, CsvStructureError
 from backend.csv.validator import validate_rows
 from backend.csv.template import generate_template_csv
 from backend.csv.models import CsvValidationResult
+
+# --- FEATURE 16 imports — reusing backend/report/ exactly as built ---
+from backend.report.pdf_builder import build_report_pdf, build_report_filename
 
 router = APIRouter(prefix="/api/projects", tags=["Calculation Engine"])
 
@@ -659,4 +663,40 @@ async def upload_csv_loads_endpoint(project_id: str, file: UploadFile = File(...
         committed=True,
         loads_added=validation_result.valid_count,
         project=result,
+    )
+
+
+# ===========================================================================
+# FEATURE 16 — PDF Report Generation
+# Single thin route. No calculation logic here — reads project.
+# last_calculation_result and hands it to backend/report/pdf_builder.py,
+# which formats it. Never recalculates. Per finalized Feature 16 spec §2.
+# ===========================================================================
+
+@router.post("/{project_id}/report")
+async def generate_report_endpoint(project_id: str) -> Response:
+    """
+    Generates and streams a PDF report built from the project's saved
+    last_calculation_result. 404 if the project doesn't exist. 400 if the
+    project has never had a successful calculation saved (nothing to
+    report on yet). PDF bytes are streamed directly — never written to
+    disk or the database, per architecture.md's Storage Model.
+    """
+    project = await repository.get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    if project.last_calculation_result is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This project has no saved calculation result yet — run and save a calculation before exporting a report.",
+        )
+
+    pdf_bytes = await run_in_threadpool(build_report_pdf, project)
+    filename = build_report_filename(project.name)
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
