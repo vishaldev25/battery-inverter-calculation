@@ -21,7 +21,9 @@ battery + inverter recommendation, cable/fuse sizing, and warnings — per
 including inside the "formula → substituted numbers → result" lines in the Engineering
 Calculations section — is read directly from `project.last_calculation_result`. The
 formula lines document *how* an already-computed number was derived; they never
-re-evaluate anything. `pdf_builder.py` never imports from `backend/calculation/`.
+re-evaluate anything. `pdf_builder.py` imports only constants from
+`backend/calculation/constants.py` (specifically `BATTERY_STANDARDS_BY_CHEMISTRY` for
+accurate chemistry-specific standards citations), but performs no calculation logic.
 
 ## 3. Entry point
 
@@ -163,14 +165,12 @@ Accent rule under the header area, a lighter rule above the footer strip, projec
   conflict on the first attempt — see Resolved Issue #16 in `progress-tracker.md`).
   Script deleted after confirmation, per standing practice.
 
-## 9. Known gap as of this writing (tracked in `progress-tracker.md`, not yet closed)
+## 9. Audit-field consumption (post-Feature-16 follow-up)
 
-`pdf_builder.py` was written **before** the later calculation-engine audit added the
-audit-trail fields (`ah_autonomy`, `k_t`, `dod_max_used`, `eta_batt_used` from
-`battery.py`; `pf_avg_used`, `efficiency_used` from `inverter.py`; `cable_length_m`,
-`n_parallel_strings`, `i_fuse_computed_a` from `cabling.py`) and the chemistry-aware
-`BATTERY_STANDARDS_BY_CHEMISTRY` citation lookup in `constants.py`. None of these are
-consumed by this file yet — `cabling.py`'s `i_fuse_a` key is unchanged so nothing is
-broken, it simply doesn't yet display the new standard-vs-computed fuse comparison, the
-numeric PF, or the correct per-chemistry standards citation. This is the currently
-scheduled next unit of work, not part of this feature's original scope.
+`pdf_builder.py` now displays audit-trail fields added during the calculation-engine
+audit: `pf_avg_used` (shown in Section 3.1 Inverter Sizing), `cable_length_m` and
+`i_fuse_computed_a` (shown in Section 4 Cable Selection table alongside the standard
+`i_fuse_a`), and chemistry-specific standards citations via `BATTERY_STANDARDS_BY_CHEMISTRY`
+(shown in Section 1 Executive Summary and Section 3.2 Battery Bank Sizing). All values
+are read from `project.last_calculation_result` or `project.parameters`; no new
+calculations are performed.

@@ -53,6 +53,7 @@ import io
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from xml.sax.saxutils import escape as xml_escape
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -233,6 +234,9 @@ def build_report_pdf(project: Project) -> bytes:
     styles = _build_styles()
     generated_on = datetime.now(timezone.utc).strftime("%B %d, %Y")
 
+    # Look up chemistry-specific standards citation for accurate referencing
+    chemistry_citation = BATTERY_STANDARDS_BY_CHEMISTRY.get(project.parameters.battery_chemistry)
+
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -248,7 +252,7 @@ def build_report_pdf(project: Project) -> bytes:
 
     story: List[Any] = []
     story.extend(_build_title_block(project, result, styles, generated_on))
-    story.extend(_build_executive_summary(result, styles))
+    story.extend(_build_executive_summary(result, styles, chemistry_citation))
     story.append(Spacer(1, 10))
     story.extend(_build_load_schedule_table(project, styles))
     story.append(PageBreak())
@@ -272,7 +276,7 @@ def _build_title_block(project: Project, result: Dict[str, Any], styles, generat
 
     elements: List[Any] = [
         Paragraph("ENGINEERING SIZING REPORT", styles["ReportKicker"]),
-        Paragraph(project.name or "Untitled Project", styles["Title"]),
+        Paragraph(xml_escape(project.name or "Untitled Project"), styles["Title"]),
         Paragraph("Battery Bank &amp; Inverter Sizing Analysis", styles["SubTitle"]),
     ]
 
@@ -334,15 +338,17 @@ def _highlight_box(label: str, value: str, sub: str, width_mm: float, styles) ->
     return inner
 
 
-def _build_executive_summary(result: Dict[str, Any], styles) -> List[Any]:
+def _build_executive_summary(result: Dict[str, Any], styles, chemistry_citation: Optional[str] = None) -> List[Any]:
     battery = result.get("battery_summary", {}) or {}
     inverter = result.get("inverter_summary", {}) or {}
     cabling = result.get("cabling_summary", {}) or {}
 
+    standards_ref = f"{chemistry_citation} and NEC" if chemistry_citation else "IEEE standards and NEC"
+
     elements: List[Any] = [
         Paragraph("1. Executive Summary", styles["SectionHeading"]),
         Paragraph(
-            "This report provides the standards-based (IEEE 485 / IEEE 1013 / NEC) battery bank and "
+            f"This report provides the standards-based ({standards_ref}) battery bank and "
             "inverter sizing recommendation calculated for this project's load profile and site parameters.",
             styles["Body"],
         ),
@@ -422,7 +428,7 @@ def _build_load_schedule_table(project: Project, styles) -> List[Any]:
         if load.is_concurrent:
             total_peak_w += load.nominal_watts * load.quantity
         rows.append([
-            _cell(load.name),
+            _cell(xml_escape(load.name)),
             _cell(str(load.quantity)),
             _cell(f"{load.nominal_watts:.0f}"),
             _cell(f"{load.daily_hours:.1f}"),

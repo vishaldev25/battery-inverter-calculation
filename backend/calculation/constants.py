@@ -125,7 +125,7 @@ DEFAULT_INVERTER_EFFICIENCY = 0.90
 # gap (Feature 16 engineering review): backend/calculation/cabling.py
 # previously returned the raw computed float as "the fuse rating."
 STANDARD_FUSE_SIZES_A = [
-    15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100,
+    1, 3, 6, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100,
     110, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500, 600,
 ]
 

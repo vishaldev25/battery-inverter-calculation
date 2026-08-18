@@ -10,6 +10,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, status, Query, UploadFile, File
 from fastapi.responses import Response
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from backend.projects.models import LoadItem, ProjectParameters, Project
@@ -691,7 +692,7 @@ async def generate_report_endpoint(project_id: str) -> Response:
             detail="This project has no saved calculation result yet — run and save a calculation before exporting a report.",
         )
 
-    pdf_bytes = build_report_pdf(project)
+    pdf_bytes = await run_in_threadpool(build_report_pdf, project)
     filename = build_report_filename(project.name)
 
     return Response(
